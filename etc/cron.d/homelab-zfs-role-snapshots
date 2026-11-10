@@ -1,0 +1,7 @@
+# Local ZFS role-dataset snapshots (r2). Independent of PBS.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# nightly tank root, matrix, studio-homelab, andr-bundles @ 03:15
+15 3 * * * root /usr/local/sbin/homelab-zfs-role-snapshots nightly >> /var/log/homelab-zfs-role-snapshots.log 2>&1
+# weekly andr-bundles Sunday @ 04:15
+15 4 * * 0 root /usr/local/sbin/homelab-zfs-role-snapshots weekly >> /var/log/homelab-zfs-role-snapshots.log 2>&1

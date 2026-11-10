@@ -1,0 +1,4 @@
+# Lab Ingest Fabric v1 promote
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /usr/bin/python3 /usr/local/sbin/lif-ingest-promote.py >> /var/log/lif-ingest.cron.log 2>&1

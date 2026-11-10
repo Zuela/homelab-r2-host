@@ -1,0 +1,30 @@
+#!/bin/bash
+# Named job conference-tracker:sheet-refresh (andr-ops tasks 0007, 0032, 0038). Copies the master list into the Conference Tracker Sheet when the tracker has a new commit.
+# Main path: plain script in CT 219 through the Sheets API, with Dan's Google login. Backup path: Claude through the Sheets connector, used only if the script fails.
+# After a failure it retries at most hourly and alerts once until it works again.
+set -u
+export TRACKER_DIR=/tank/andr/conference-tracker CLAUDE_BIN=/root/.local/bin/claude
+ts=$(date +'%Y-%m-%d %H:%M'); STATE=/var/lib/andr-sheet-refresh; FLAG=$STATE/failing
+git -C "$TRACKER_DIR" pull -q --ff-only || echo "$ts pull failed, using the clone as it is"
+head=$(git -C "$TRACKER_DIR" rev-parse HEAD)
+[ "$head" = "$(cat "$STATE/last-head" 2>/dev/null)" ] && exit 0
+[ -e "$FLAG" ] && [ -n "$(find "$FLAG" -mmin -60)" ] && exit 0
+done_ok() { echo "$head" > "$STATE/last-head"; rm -f "$FLAG"; }
+if out=$(pct exec 219 -- su -s /bin/bash intake -c 'set -a; . /etc/sheet-refresh/env; set +a; SHEET_REFRESH_APPLY=1 python3 /opt/sheet-refresh/sheet_refresh.py' 2>&1); then
+  printf '%s\n' "$out" | sed "s/^/$ts script: /"
+  done_ok
+  exit 0
+fi
+printf '%s\n' "$out" | tail -3 | cut -c1-200 | sed "s/^/$ts script FAILED: /"
+cd /usr/local/lib/andr || exit 1
+if out=$(python3 connector_refresh.py "$@" 2>&1); then rc=0; else rc=$?; fi
+printf '%s\n' "$out" | sed "s/^/$ts connector: /"
+first=0; [ -e "$FLAG" ] || first=1
+if [ "$rc" -eq 0 ]; then
+  [ "$first" -eq 1 ] && { echo "The script path failed, and the connector backup did the Sheet refresh. See /var/log/andr-sheet-refresh.log" | /usr/local/sbin/lab-notify "Conference Sheet refresh used its backup" >/dev/null 2>&1 || echo "$ts alert send FAILED"; }
+  done_ok
+else
+  touch "$FLAG"
+  [ "$first" -eq 1 ] && { echo "The Sheet refresh failed on both paths on r2. It retries hourly. See /var/log/andr-sheet-refresh.log" | /usr/local/sbin/lab-notify "Conference Sheet refresh failed" >/dev/null 2>&1 || echo "$ts alert send FAILED"; }
+fi
+exit "$rc"

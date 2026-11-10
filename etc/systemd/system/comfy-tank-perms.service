@@ -1,0 +1,11 @@
+[Unit]
+Description=Fix ComfyUI tank bind-mount permissions for CT/SMB
+After=local-fs.target zfs-mount.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/comfy-tank-perms-fix
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

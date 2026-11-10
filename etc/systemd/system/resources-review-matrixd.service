@@ -1,0 +1,16 @@
+[Unit]
+Description=LIF resources-review Matrix command daemon
+After=network-online.target resources-review-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/resources-review
+Environment=MATRIX_RESOURCES_BOT_CREDS=/root/.creds/matrix-resources-bot
+Environment=MATRIX_RESOURCES_TOKEN_FILE=/root/.creds/matrix-resources-bot.token
+ExecStart=/usr/bin/python3 /usr/local/sbin/resources-review-matrixd.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

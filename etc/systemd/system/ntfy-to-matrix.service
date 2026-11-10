@@ -1,0 +1,12 @@
+[Unit]
+Description=Copy ntfy homelab-alerts messages into the Matrix homelab-alerts room
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/bin/bash -c 'set -a; . /root/.creds/ntfy; set +a; exec /usr/bin/python3 -I /usr/local/lib/andr/ntfy_to_matrix.py'
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

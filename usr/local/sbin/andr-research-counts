@@ -1,0 +1,9 @@
+#!/bin/bash
+# Evidence counts on andr-ops docs/evidence-counts.md (task 0042). Called by andr-research-integrity with an exported copy of research main. Commits only on change.
+set -u
+OPS=/tank/andr/andr-ops; OUT=docs/evidence-counts.md
+python3 -I /usr/local/lib/andr/research_counts.py "$1" > "$OPS/$OUT" || { git -C "$OPS" checkout -q -- "$OUT" 2>/dev/null; echo "counts failed"; exit 1; }
+[ -z "$(git -C "$OPS" status --porcelain -- "$OUT")" ] && exit 0
+git -C "$OPS" add "$OUT"
+git -C "$OPS" -c user.name=r2 -c user.email=r2@local commit -q -m "Evidence counts update (task 0042)"
+git -C "$OPS" push -q origin main || { echo "counts push failed; commit left local"; exit 1; }

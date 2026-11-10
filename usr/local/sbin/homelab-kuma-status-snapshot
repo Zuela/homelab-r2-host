@@ -1,0 +1,33 @@
+#!/bin/bash
+# Write read-only Kuma monitor snapshot for Hermes/docs consumer.
+OUT=/var/lib/homelab-status/kuma-monitors.json
+TMP=$(mktemp)
+pct exec 201 -- sqlite3 -json /opt/uptime-kuma/data/kuma.db "
+SELECT m.id, m.name, m.type, m.url, m.hostname, m.port, m.active,
+  h.status AS last_status, h.msg AS last_msg, h.time AS last_time
+FROM monitor m
+LEFT JOIN heartbeat h ON h.id = (SELECT MAX(id) FROM heartbeat WHERE monitor_id = m.id)
+WHERE m.active = 1
+ORDER BY m.name;
+" > "$TMP" 2>/dev/null || echo '[]' > "$TMP"
+python3 - << PY
+import json, pathlib, datetime
+raw = pathlib.Path("$TMP").read_text() or "[]"
+try:
+    rows = json.loads(raw)
+except Exception:
+    rows = []
+# map status 0 down 1 up 2 pending
+for r in rows:
+    s = r.get("last_status")
+    r["last_status_label"] = {0: "down", 1: "up", 2: "pending"}.get(s, str(s))
+out = {
+    "ok": True,
+    "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+    "source": "uptime-kuma CT201 sqlite heartbeat",
+    "monitors": rows,
+}
+pathlib.Path("$OUT").write_text(json.dumps(out, indent=2) + "\n")
+print("wrote", "$OUT", "count", len(rows))
+PY
+rm -f "$TMP"

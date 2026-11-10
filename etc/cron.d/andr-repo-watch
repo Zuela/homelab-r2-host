@@ -1,0 +1,5 @@
+# Pull andr-ops and research every 15 minutes, andr-ops task 0027 (Dan asked 2026-11-02). Offset from :00 and :05 jobs that use the same clones.
+# 20261107T215609Z: shares /run/lock/andr-conference-tracker.lock with the other conference-tracker pullers so two git pulls never collide (Suggest export failed 2026-11-07 15:37).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+7,22,37,52 * * * * root flock -w 120 /run/lock/andr-conference-tracker.lock /usr/local/sbin/andr-repo-watch >>/var/log/andr-repo-watch.log 2>&1

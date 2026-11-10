@@ -1,0 +1,4 @@
+# INT-009 Muse outbox -> LIF inbox
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+15 * * * * root /usr/local/sbin/lif-muse-outbox-pull >> /var/log/lif-muse-adapter.cron.log 2>&1

@@ -1,0 +1,69 @@
+#!/bin/bash
+# intake-capture alert (2026-10-29, Dan approved). Runs on the r2 host after the nightly capture window.
+# Reads CT218's last intake-capture run and the queue, and sends ONE ntfy message only when something
+# needs attention: the run failed, Instagram blocked it, items were held, the run fell back to
+# Tesseract, the timer has not run in 26 hours, or a scaffold has waited more than 48 hours.
+# Counts and statuses only, never captured text. Quiet nights send nothing.
+set -u
+CT=218
+NTFY_ENV=/root/.creds/ntfy  # defines NTFY_BASE_URL + NTFY_TOKEN_FILE
+NTFY_TOPIC=homelab-alerts
+LOG=/var/log/intake-capture-alert.log
+issues=()
+
+result=$(pct exec $CT -- systemctl show intake-capture.service -p Result --value 2>/dev/null)
+last=$(pct exec $CT -- systemctl show intake-capture.service -p ExecMainExitTimestampMonotonic --value 2>/dev/null)
+up=$(pct exec $CT -- cat /proc/uptime 2>/dev/null | cut -d' ' -f1 | cut -d. -f1)
+if [ -z "$result" ]; then
+  issues+=("CT$CT unreachable or service missing")
+else
+  [ "$result" != "success" ] && issues+=("last run result: $result")
+  if [ -n "$last" ] && [ "$last" != "0" ] && [ -n "$up" ]; then
+    age_h=$(( (up - last / 1000000) / 3600 ))
+    [ "$age_h" -gt 26 ] && issues+=("no run in ${age_h}h")
+  fi
+fi
+
+# Last run's JSON log lines (counts only).
+summary=$(pct exec $CT -- journalctl -u intake-capture.service --since "-24h" -o cat --no-pager 2>/dev/null | python3 -c '
+import json, sys
+held = blocked = 0; vision = None; end = None; errs = 0
+for line in sys.stdin:
+    try: e = json.loads(line)
+    except ValueError: continue
+    if e.get("event") == "start": vision = e.get("vision")
+    if e.get("status") == "held": held += 1
+    if e.get("run") == "ended": blocked += 1
+    if e.get("event") == "end": end = e; errs = e.get("vision_errors", 0)
+out = []
+if blocked: out.append("run stopped by a block (login wall or rate limit)")
+if held: out.append(f"{held} item(s) held")
+if vision is False: out.append("vision model unavailable, Tesseract only")
+if errs: out.append(f"{errs} vision error(s)")
+print("; ".join(out))
+')
+[ -n "$summary" ] && issues+=("$summary")
+
+# Scaffolds waiting more than 48 hours in queue/incoming.
+# Age comes from each scaffold's queued_at date (file times reset on every git pull).
+stale=$(pct exec $CT -- su - igcap -c 'cd ~/work/social-intake 2>/dev/null && git pull -q --rebase origin intake-queue >/dev/null 2>&1; ~/venv/bin/python -c "
+import glob, re, datetime as dt
+n = 0
+for f in glob.glob(\"queue/incoming/*.md\"):
+    m = re.search(r\"^queued_at: .?(\\d{4}-\\d{2}-\\d{2})\", open(f).read(), re.M)
+    if m and (dt.date.today() - dt.date.fromisoformat(m.group(1))).days >= 2: n += 1
+print(n)"' 2>/dev/null)
+[ -n "$stale" ] && [ "$stale" -gt 0 ] && issues+=("$stale scaffold(s) waiting more than 48h")
+
+if [ "${#issues[@]}" -eq 0 ]; then
+  echo "$(date -u +%FT%TZ) ok" >> "$LOG"
+  exit 0
+fi
+msg=$(printf '%s\n' "${issues[@]}")
+echo "$(date -u +%FT%TZ) alert: $(echo "$msg" | tr '\n' '|')" >> "$LOG"
+if [ -r "$NTFY_ENV" ]; then
+  . "$NTFY_ENV"
+  TOKEN=$(cat "$NTFY_TOKEN_FILE" 2>/dev/null)
+  curl -fsS -m 10 -H "Authorization: Bearer $TOKEN" -H "Title: intake-capture needs a look" -H "Tags: camera" \
+    -d "$msg" "$NTFY_BASE_URL/$NTFY_TOPIC" >/dev/null 2>&1 || echo "$(date -u +%FT%TZ) ntfy send FAILED" >> "$LOG"
+fi

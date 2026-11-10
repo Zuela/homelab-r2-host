@@ -1,0 +1,29 @@
+#!/bin/bash
+# Pull the andr-ops, research, and conference-tracker clones, ff-only, never pushes (andr-ops tasks 0027 and 0007).
+# A pull failing four runs in a row (an hour) sends one alert. Uses its own log: andr-research-integrity
+# treats a recent /var/log/andr-research-pull.log as pull errors.
+set -u
+STATE=/var/lib/andr-repo-watch
+mkdir -p "$STATE"
+ts=$(date +'%Y-%m-%d %H:%M')
+for repo in andr-ops research conference-tracker; do
+  if err=$(timeout 180 git -C "/tank/andr/$repo" pull -q --ff-only 2>&1); then
+    echo "$ts ok $repo $(git -C "/tank/andr/$repo" rev-parse --short HEAD)"
+    rm -f "$STATE/$repo.fails"
+  else
+    n=$(( $(cat "$STATE/$repo.fails" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STATE/$repo.fails"
+    echo "$ts FAILED $repo run $n: $(printf '%s' "$err" | tail -1 | cut -c1-160)"
+    if [ "$n" -eq 4 ]; then
+      echo "$repo pull has failed for an hour on r2. See /var/log/andr-repo-watch.log" | /usr/local/sbin/lab-notify "AndR clone not updating" >/dev/null 2>&1 || echo "$ts alert send FAILED"
+    fi
+  fi
+done
+# Sage run freshness (task 0033). Each stale condition alerts once until it is fresh again.
+if stale=$(python3 -I /usr/local/lib/andr/repo_freshness.py 2>&1); then
+  if [ -n "$stale" ]; then
+    echo "$ts stale: $stale"
+    printf '%s\n' "$stale" | /usr/local/sbin/lab-notify "A Sage run may have stopped" >/dev/null 2>&1 || echo "$ts alert send FAILED"
+  fi
+else
+  echo "$ts freshness check failed: $(printf '%s' "$stale" | tail -1 | cut -c1-160)"
+fi

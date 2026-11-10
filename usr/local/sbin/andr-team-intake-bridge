@@ -1,0 +1,4 @@
+#!/bin/bash
+# Carries Sage's verdict lines from research main into the team-intake API on CT 219 (andr-ops task 0026). Fetch only, never pushes.
+set -a; . /root/.secrets/andr/team-intake-bridge.env; set +a
+exec /usr/bin/python3 -I /usr/local/lib/andr/team_intake_bridge.py

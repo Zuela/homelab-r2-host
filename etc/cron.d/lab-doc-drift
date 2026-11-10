@@ -1,0 +1,5 @@
+# Homelab doc drift check (Dan asked 2026-11-10): ops/ARCHITECTURE.md vs live r2, other copies marked historical.
+# Writes ops/DOC-DRIFT.md + /var/lib/homelab-status/doc-drift.json, alerts via lab-notify only when findings change.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+35 * * * * root /usr/local/sbin/lab-doc-drift >> /var/log/lab-doc-drift.log 2>&1

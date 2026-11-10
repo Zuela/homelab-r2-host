@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""One-time Google sign-in for the Sheet refresh job (andr-ops task 0032). Run through: ssh -t r2-ts /usr/local/sbin/andr-sheet-signin
+Reads the OAuth Desktop client file and saves a refresh token, Sheets scope only. Prints no secrets.
+After sign-in the browser lands on a localhost page that cannot load, which is expected; its address carries the one-time code."""
+import base64, hashlib, json, os, secrets, sys, urllib.parse, urllib.request
+
+CLIENT = '/root/.secrets/andr/sheet-refresh-oauth-client.json'
+OUT = '/root/.secrets/andr/sheet-refresh-user.json'
+REDIRECT = 'http://localhost:8767/'
+SCOPE = 'https://www.googleapis.com/auth/spreadsheets'
+if not os.path.exists(CLIENT):
+    sys.exit(f'Client file not found at {CLIENT}. Do the scp step first.')
+c = json.load(open(CLIENT))['installed']
+state, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(64)
+challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+url = c['auth_uri'] + '?' + urllib.parse.urlencode({'client_id': c['client_id'], 'redirect_uri': REDIRECT, 'response_type': 'code', 'scope': SCOPE,
+    'access_type': 'offline', 'prompt': 'consent', 'state': state, 'code_challenge': challenge, 'code_challenge_method': 'S256', 'login_hint': 'daniel@andrmusic.co'})
+print('Open this link in your browser and sign in as daniel@andrmusic.co:\n\n' + url + '\n', flush=True)
+print('After you allow access, the browser shows a page that cannot load. That is expected.', flush=True)
+line = input('Copy the whole address from the browser bar and paste it here, then press Return:\n').strip()
+got = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(line).query))
+if got.get('state') != state:
+    sys.exit('That address is not from this sign-in. Run the command again and use the newest link.')
+if 'code' not in got:
+    sys.exit(f'Google said: {got.get("error", "no code")}')
+body = urllib.parse.urlencode({'code': got['code'], 'client_id': c['client_id'], 'client_secret': c.get('client_secret', ''), 'redirect_uri': REDIRECT,
+                               'grant_type': 'authorization_code', 'code_verifier': verifier}).encode()
+tok = json.load(urllib.request.urlopen(urllib.request.Request(c['token_uri'], body), timeout=30))
+if 'refresh_token' not in tok:
+    sys.exit('Google returned no refresh token. Run the command again.')
+fd = os.open(OUT, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, 'w') as f:
+    json.dump({'type': 'authorized_user', 'client_id': c['client_id'], 'client_secret': c.get('client_secret', ''), 'refresh_token': tok['refresh_token'], 'token_uri': c['token_uri']}, f)
+print('Done. Signed in and saved on r2. You can close this. Tell r2 "signed in".')

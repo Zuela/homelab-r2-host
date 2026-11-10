@@ -1,0 +1,17 @@
+#!/bin/bash
+# New Suggest tab rows into conference-tracker team/suggestions.csv (andr-ops task 0038). New rows send a count to Matrix. A failure alerts once until it works again.
+set -u
+ts=$(date +'%Y-%m-%d %H:%M'); FLAG=/var/lib/andr-repo-watch/suggest-failing
+if out=$(python3 -I /usr/local/lib/andr/suggest_export.py 2>&1); then
+  rm -f "$FLAG"
+  if [ -n "$out" ]; then
+    echo "$ts exported $out"
+    echo "$out new conference suggestion(s) reached the tracker repo." | /usr/local/sbin/lab-notify "Conference suggestion" >/dev/null 2>&1 || echo "$ts alert send FAILED"
+  fi
+else
+  echo "$ts FAILED: $(printf '%s' "$out" | tail -1 | cut -c1-160)"
+  if [ ! -e "$FLAG" ]; then
+    touch "$FLAG"
+    echo "The Suggest tab export failed on r2. See /var/log/andr-suggest-export.log" | /usr/local/sbin/lab-notify "Suggest tab export failing" >/dev/null 2>&1 || echo "$ts alert send FAILED"
+  fi
+fi

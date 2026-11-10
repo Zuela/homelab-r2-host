@@ -1,0 +1,11 @@
+[Unit]
+Description=PBS backup of tank/studio-homelab
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/r2-studio-datasets-backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

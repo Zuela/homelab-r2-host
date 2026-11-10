@@ -1,0 +1,5 @@
+# Suggest tab rows into team/suggestions.csv every 5 minutes, andr-ops task 0038 (Dan asked 2026-11-03). Reads the Sheet only.
+# 20261107T215609Z: shares /run/lock/andr-conference-tracker.lock with the other conference-tracker pullers so two git pulls never collide (Suggest export failed 2026-11-07 15:37).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+2-57/5 * * * * root flock -w 120 /run/lock/andr-conference-tracker.lock /usr/local/sbin/andr-suggest-export >>/var/log/andr-suggest-export.log 2>&1

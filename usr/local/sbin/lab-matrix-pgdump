@@ -1,0 +1,19 @@
+#!/bin/bash
+# Nightly Synapse pg_dump to /tank/matrix/pgdump, keep 7. Added 2026-11-03: CT214 database mounts are backup=0.
+# Kept out of studio-homelab because CT212 and CT216 mount that read-only. Doc: ops/ARCHITECTURE.md
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+set -o pipefail
+DIR=/tank/matrix/pgdump
+OUT="$DIR/synapse-pg-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+umask 077
+if pct exec 214 -- sh -c 'cd /opt/matrix && docker compose exec -T db pg_dump -U synapse synapse' | gzip -c > "$OUT.tmp" \
+   && gzip -t "$OUT.tmp" && [ "$(stat -c %s "$OUT.tmp")" -gt 100000 ]; then
+  mv "$OUT.tmp" "$OUT"
+  echo "$(date -u +%FT%TZ) ok $OUT $(stat -c %s "$OUT")"
+  ls -1t "$DIR"/synapse-pg-*.sql.gz | tail -n +8 | xargs -r rm -f
+else
+  rm -f "$OUT.tmp"
+  echo "$(date -u +%FT%TZ) FAILED"
+  echo "See /var/log/lab-matrix-pgdump.log" | lab-notify "Matrix database dump failed on r2"
+  exit 1
+fi

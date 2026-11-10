@@ -1,0 +1,12 @@
+#!/bin/bash
+# Resume Ollama (balanced mode) after a GPU-for-ComfyUI pause. Added 2026-10-14.
+# Used by one-shot /etc/cron.d/lab-ollama-resume-once; also fine to run by hand.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/lab-ollama-resume.log
+TS=$(date -u +%FT%TZ)
+pct exec 202 -- sh -c "cd /opt/ollama && docker compose up -d --no-deps ollama" >> "$LOG" 2>&1
+sleep 10
+CODE=$(curl -s -o /dev/null -m 5 -w "%{http_code}" http://192.168.4.35:11434/api/tags || echo dead)
+rm -f /var/lib/lab-healthcheck/ollama-paused
+echo "[$TS] resume ollama api=$CODE (balanced mode, keep_alive 10m)" >> "$LOG"
+rm -f /etc/cron.d/lab-ollama-resume-once

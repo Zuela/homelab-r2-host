@@ -1,0 +1,5 @@
+# Backup alert and weekly health summary to ntfy (Dan asked 2026-11-02). Daily 07:05 alerts only on a backup problem; weekly Monday 08:00 always sends.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+5 7 * * * root /usr/local/sbin/lab-health-report daily >>/var/log/lab-health.log 2>&1
+0 8 * * 1 root /usr/local/sbin/lab-health-report weekly >>/var/log/lab-health.log 2>&1

@@ -1,0 +1,33 @@
+#!/bin/bash
+# Named job research:integrity (andr-ops task 0021). Read-only on research main.
+# Findings and staleness alerts become Log lines on andr-ops tasks/open/0021-integrity-job.md; silent when clean.
+set -u
+R=/tank/andr/research; OPS=/tank/andr/andr-ops
+TASK=tasks/open/0021-integrity-job.md
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+git -C "$R" fetch -q origin main || { echo "fetch research failed"; exit 1; }
+git -C "$OPS" pull -q --ff-only || { echo "pull andr-ops failed"; exit 1; }
+git -C "$R" archive origin/main | tar -x -C "$tmp"
+/usr/local/sbin/andr-research-counts "$tmp"
+findings=$(python3 -I /usr/local/lib/andr/research_integrity.py "$tmp" "$OPS")
+
+# Staleness: clone head behind origin by more than 8 days, or recent pull errors.
+head_ts=$(git -C "$R" log -1 --format=%ct HEAD); origin_ts=$(git -C "$R" log -1 --format=%ct origin/main)
+if [ $((origin_ts - head_ts)) -gt $((8 * 86400)) ]; then
+  findings+=$'\n'"stale clone: /tank/andr/research HEAD is more than 8 days behind origin/main"
+fi
+PL=/var/log/andr-research-pull.log
+if [ -s "$PL" ] && [ -n "$(find "$PL" -mtime -8)" ]; then
+  findings+=$'\n'"pull errors in $PL within the last 8 days: $(tail -1 "$PL" | cut -c1-120)"
+fi
+findings=$(printf '%s\n' "$findings" | sed '/^$/d')
+[ -z "$findings" ] && exit 0
+
+now=$(date +'%Y-%m-%d %H:%M')
+n=$(printf '%s\n' "$findings" | wc -l)
+{ printf '%s\n' "$findings" | head -20 | sed "s/^/- $now ET · r2 · integrity: /"
+  [ "$n" -gt 20 ] && echo "- $now ET · r2 · integrity: $((n - 20)) more findings not listed; run andr-research-integrity on r2 for the full list"
+} >> "$OPS/$TASK"
+git -C "$OPS" add "$TASK"
+git -C "$OPS" -c user.name=r2 -c user.email=r2@local commit -q -m "0021: integrity run $now, $n finding(s)"
+git -C "$OPS" push -q origin main || { echo "push failed; commit left local"; exit 1; }

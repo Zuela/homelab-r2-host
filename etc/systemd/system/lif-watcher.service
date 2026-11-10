@@ -1,0 +1,16 @@
+[Unit]
+Description=lab ingest fabric watcher (sources + issues)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/lif-watcher.py
+EnvironmentFile=/etc/lif/watcher.env
+Restart=on-failure
+RestartSec=30
+User=root
+WorkingDirectory=/root
+
+[Install]
+WantedBy=multi-user.target

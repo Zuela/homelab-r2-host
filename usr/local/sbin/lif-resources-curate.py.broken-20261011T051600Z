@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""LIF -> second-brain curator.
+
+Reads newly promoted LIF markdown, drafts PARA Resources notes via Ollama,
+and commits proposals into vault-sync inbox/resources-staging/<bucket>/.
+Music-related notes go under music/ until Muse scope expands.
+Notifies Matrix #resources-review with stable proposal ids.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import traceback
+from pathlib import Path
+
+sys.path.insert(0, "/usr/local/sbin")
+import resources_review_lib as rr  # noqa: E402
+
+LIF_INCOMING = Path(os.environ.get("LIF_INCOMING", "/tank/studio-homelab/vault-drop/lif/incoming"))
+CURATE_LEDGER = Path(os.environ.get("LIF_CURATE_LEDGER", "/tank/ingest/state/curated-sha256.json"))
+AUDIT = Path(os.environ.get("LIF_CURATE_AUDIT", "/var/log/lif-resources-curate.jsonl"))
+OLLAMA = os.environ.get("OLLAMA_HOST", "http://192.168.4.35:11434").rstrip("/")
+MODEL = os.environ.get("LIF_CURATE_MODEL", "qwen3-agent:latest")
+COMMIT_BIN = os.environ.get("VAULT_SYNC_COMMIT_BIN", "/usr/local/sbin/vault-sync-commit")
+MAX_FILES = int(os.environ.get("LIF_CURATE_MAX_FILES", "8"))
+MAX_SOURCE_CHARS = int(os.environ.get("LIF_CURATE_MAX_CHARS", "12000"))
+DEFAULT_BUCKET = os.environ.get("LIF_CURATE_DEFAULT_BUCKET", "music").strip().strip("/")
+NOTIFY = os.environ.get("LIF_CURATE_MATRIX_NOTIFY", "1").strip() not in {"0", "false", "no"}
+
+MUSIC_HINTS = (
+    "music", "spotify", "dsp", "streaming", "artist", "label", "song", "album",
+    "playlist", "bandsintown", "tour", "concert", "royalt", "payout", "tiktok",
+    "instagram", "soundcloud", "apple music", "catalog", "a&r", "indie",
+    "hip-hop", "hip hop", "rap", "producer", "beat", "sync", "publishing",
+    "muse", "social-intake", "fan-data", "fan data", "ccdt", "conceit",
+)
+
+
+def log(event: dict) -> None:
+    AUDIT.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), **event}
+    with AUDIT.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def force_enabled() -> bool:
+    if os.environ.get("LIF_CURATE_FORCE", "").strip() in {"1", "true", "yes"}:
+        return True
+    return any(a in {"--force", "-f"} for a in sys.argv[1:])
+
+
+def parse_frontmatter(text: str) -> tuple[dict, str]:
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
+    meta_raw, body = parts[1], parts[2]
+    meta: dict = {}
+    for line in meta_raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        key = k.strip()
+        val = v.strip().strip("'").strip('"')
+        if val.startswith("[") and val.endswith("]"):
+            inner = val[1:-1].strip()
+            meta[key] = [x.strip().strip("'").strip('"') for x in inner.split(",") if x.strip()] if inner else []
+        else:
+            meta[key] = val
+    if "tags" not in meta:
+        tags = []
+        in_tags = False
+        for line in meta_raw.splitlines():
+            if line.strip() == "tags:" or line.strip().startswith("tags:"):
+                in_tags = True
+                continue
+            if in_tags:
+                if line.strip().startswith("- "):
+                    tags.append(line.strip()[2:].strip().strip("'").strip('"'))
+                elif line.strip() and not line.startswith(" "):
+                    break
+        if tags:
+            meta["tags"] = tags
+    return meta, body.lstrip("\n")
+
+
+def collect_candidates() -> list[Path]:
+    if not LIF_INCOMING.exists():
+        return []
+    files = [p for p in LIF_INCOMING.rglob("*.md") if not p.name.endswith(".lif.json")]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files
+
+
+def is_music_related(title: str, meta: dict, body: str, source_path: str) -> bool:
+    sp = source_path.lower()
+    if "muse" in sp or "social-intake" in sp or "posts__" in sp or "themes__" in sp:
+        return True
+    blob_parts = [title, source_path, body[:4000]]
+    tags = meta.get("tags") or []
+    if isinstance(tags, list):
+        blob_parts.extend(str(t) for t in tags)
+    elif tags:
+        blob_parts.append(str(tags))
+    for k, v in meta.items():
+        blob_parts.append(f"{k} {v}")
+    blob = " ".join(blob_parts).lower()
+    return any(h in blob for h in MUSIC_HINTS)
+
+
+def resources_bucket(title: str, meta: dict, body: str, source_path: str) -> str:
+    explicit = (meta.get("resources_folder") or meta.get("para_folder") or "").strip().strip("/")
+    if explicit:
+        seg = explicit.split("/")[0]
+        if re.fullmatch(r"[A-Za-z0-9_-]+", seg):
+            return seg.lower()
+    if is_music_related(title, meta, body, source_path):
+        return "music"
+    return DEFAULT_BUCKET or "music"
+
+
+def ollama_curate(title: str, meta: dict, body: str, source_path: str, bucket: str) -> str:
+    import urllib.request
+
+# 2026-10-11: helper utilities for proposal formatting.
+# Additive: format_proposal is added but existing call sites are unchanged.
+
+def parse_first_heading(text):
+    """Return first H1 heading or empty string."""
+    for line in text.splitlines():
+        if line.lstrip().startswith("# "):
+            return line.lstrip()[2:].strip()
+    return ""
+
+
+def extract_lift(text, title):
+    """First non-empty paragraph after title heading, capped at 200 chars."""
+    if not title:
+        return ""
+    lines = text.splitlines()
+    in_title = False
+    for line in lines:
+        s = line.strip()
+        if not in_title and s == "# " + title:
+            in_title = True
+            continue
+        if in_title and s:
+            truncated = s[:200]
+            if len(s) > 200:
+                truncated = truncated + "..."
+            return truncated
+    return ""
+
+
+def strip_html(html):
+    """Plain-text fallback."""
+    import re
+    return re.sub(r"<[^>]+>", "", html)
+
+
+def format_proposal(*, text, source_url, source_mtime):
+    """Return dict for proposal posting (head, body, metadata)."""
+    from datetime import datetime, timezone
+    title = parse_first_heading(text) or "Resource proposal"
+    lift = extract_lift(text, title)
+    if not source_mtime:
+        import time as _time
+        source_mtime = _time.time()
+    date_iso = datetime.fromtimestamp(source_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    head_html = (
+        "<strong>" + title + "</strong>"
+        "<br><em>" + date_iso + " · proposed by LIF</em>"
+        "<br>" + lift
+    )
+    body_md = (
+        "### " + title + "\n"
+        "_Source_: " + source_url + "\n"
+        "_Date_: " + date_iso + "\n\n"
+        + text
+    )
+    return {
+        "head_html": head_html,
+        "head_plain": strip_html(head_html),
+        "body_md": body_md,
+        "body_plain": text,
+        "title": title,
+        "date_iso": date_iso,
+    }
+
+
+    prompt = f"""You are curating research intake into an Obsidian second brain (PARA).
+Write ONE markdown note destined for folder:
+  3 - Resources/{bucket}/
+(music industry / DSP / creator economy when bucket is music).
+
+Rules:
+- Start with YAML frontmatter: title, tags, sources, curated_from, resources_folder: {bucket}
+- Include: Summary (5-10 lines), Key claims (bullets), Connections (wikilink-style [[Theme]] ideas), Open questions, Attachments/images refs if mentioned
+- Preserve important tags/authors/source URLs from input
+- Do not invent facts not supported by the source
+- No secrets
+- Keep under ~800 words
+
+Source path: {source_path}
+Frontmatter: {json.dumps(meta, ensure_ascii=False)}
+Title hint: {title}
+
+SOURCE MARKDOWN:
+---
+{body[:MAX_SOURCE_CHARS]}
+---
+"""
+    payload = {
+        "model": MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": "30m",
+        "options": {"temperature": 0.2, "num_ctx": 32768, "num_predict": 1800},
+    }
+    req = urllib.request.Request(
+        f"{OLLAMA}/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    text = (data.get("response") or "").strip()
+    if not text:
+        raise RuntimeError("empty_ollama_response")
+    return text
+
+
+def fallback_curate(title: str, meta: dict, body: str, source_path: str, digest: str, bucket: str) -> str:
+    tags = meta.get("tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    author = meta.get("author") or ""
+    source = meta.get("source") or ""
+    tag_line = ", ".join(f"{t}" for t in (tags or [])) if tags else ""
+    return f"""---
+title: "{title.replace('"', "'")}"
+tags: [{tag_line}]
+curated_from: lif
+resources_folder: {bucket}
+lif_sha256: {digest}
+source_path: "{source_path}"
+author: "{author}"
+source_url: "{source}"
+status: proposed
+---
+
+# {title}
+
+## Summary
+(Auto template; model unavailable.) Review source and expand.
+
+## Source excerpt
+{body[:2500]}
+
+## Connections
+- Related theme notes in Resources/{bucket}/
+- Link from social-intake archive
+
+## Attachments
+- Original LIF path: `{source_path}`
+"""
+
+
+def slugify(s: str) -> str:
+    s = s.lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s[:60] or "note"
+
+
+def commit_proposal(rel_path: str, content: str, title: str) -> str:
+    env = os.environ.copy()
+    env["VAULT_SYNC_MESSAGE"] = f"lif curate: {title}"[:200]
+    env["GIT_ASKPASS"] = env.get("GIT_ASKPASS", "/usr/local/sbin/gitea-vault-sync-askpass")
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    proc = subprocess.run(
+        [COMMIT_BIN, rel_path],
+        input=content.encode("utf-8"),
+        capture_output=True,
+        env=env,
+        timeout=90,
+    )
+    out = ((proc.stdout or b"") + (proc.stderr or b"")).decode("utf-8", "replace")
+    if proc.returncode != 0:
+        raise RuntimeError(f"commit_failed rc={proc.returncode}: {out[:400]}")
+    return out.strip()[:500]
+
+
+def matrix_notify(entry: dict) -> None:
+    if not NOTIFY:
+        return
+    try:
+        try:
+            text = entry.get("body") or entry.get("text") or ""
+            source_url = entry.get("source_url") or entry.get("source") or ""
+            source_mtime = entry.get("source_mtime") or 0
+            if text:
+                formatted = format_proposal(
+                    text=text,
+                    source_url=source_url,
+                    source_mtime=int(source_mtime) if source_mtime else 0,
+                )
+                entry["head_html"] = formatted["head_html"]
+                entry["head_plain"] = formatted["head_plain"]
+                entry["body_md"] = formatted["body_md"]
+                entry["body_plain"] = formatted["body_plain"]
+                entry["proposal_title"] = formatted["title"]
+                entry["proposal_date_iso"] = formatted["date_iso"]
+        except Exception as e:
+            log({"phase": "format_prep", "ok": False, "error": str(e)[:300]})
+        out = rr.notify_matrix_with_images(entry)
+        log({"phase": "matrix_notify", "ok": bool(out.get("ok")), "id": entry.get("id"), "detail": {k: out.get(k) for k in ("event_id", "images", "image_errors", "error")}})
+    except Exception as e:
+        log({"phase": "matrix_notify", "ok": False, "error": str(e)[:300]})
+
+
+def main() -> int:
+    force = force_enabled()
+    curated = rr.migrate_ledger()
+    candidates = collect_candidates()
+    done = 0
+    skipped = 0
+    for src in candidates:
+        if done >= MAX_FILES:
+            break
+        name_l = src.name.lower()
+        path_l = str(src).lower()
+        # skip junk / smoke / bare readmes unless forced
+        junk = (
+            name_l in {"readme.md"}
+            or "lif-smoke" in path_l
+            or "hello from r2" in path_l
+            or name_l.endswith("hello-from-r2.md")
+            or "/smoke" in path_l
+        )
+        if junk and "posts" not in path_l and "themes" not in path_l:
+            if not force:
+                skipped += 1
+                continue
+        digest = sha256_file(src)
+        existing = curated.get("entries", {}).get(digest)
+        if not force and existing:
+            # skip if already curated unless force
+            skipped += 1
+            continue
+        text = src.read_text(encoding="utf-8", errors="replace")
+        meta, body = parse_frontmatter(text)
+        title = str(meta.get("title") or src.stem)
+        title = re.sub(r"^muse-posts__\d+-", "", title)
+        title = title.replace("__", " / ").replace("-", " ")
+        if meta.get("title"):
+            title = str(meta["title"])
+        bucket = resources_bucket(title, meta, body, str(src))
+        try:
+            try:
+                note = ollama_curate(title, meta, body, str(src), bucket)
+            except Exception as e:
+                log({"phase": "ollama_fallback", "src": str(src), "error": str(e)[:200]})
+                note = fallback_curate(title, meta, body, str(src), digest, bucket)
+            if "lif_sha256" not in note:
+                note += f"\n\n---\nlif_sha256: `{digest}`\nsource: `{src}`\nresources_folder: {bucket}\n"
+            elif "resources_folder" not in note:
+                note = note.replace("---\n", f"---\nresources_folder: {bucket}\n", 1)
+            day = time.strftime("%Y-%m-%d", time.gmtime())
+            pid = rr.proposal_id_for_sha(digest)
+            rel = f"inbox/resources-staging/{bucket}/{day}-{slugify(title)}.md"
+            # embed proposal id in note if missing
+            if "proposal_id:" not in note:
+                note = note.replace("---\n", f"---\nproposal_id: {pid}\n", 1)
+            detail = commit_proposal(rel, note, title)
+            entry = {
+                "ts": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
+                "src": str(src),
+                "vault_sync_path": rel,
+                "staging_path": rel,
+                "title": title,
+                "bucket": bucket,
+                "sha256": digest,
+                "id": pid,
+                "status": "pending",
+            }
+            curated.setdefault("entries", {})[digest] = entry
+            rr.save_ledger(curated)
+            log({"phase": "curated", "ok": True, "src": str(src), "sha256": digest, "out": rel, "id": pid, "bucket": bucket, "detail": detail[:200]})
+            matrix_notify(entry)
+            done += 1
+            print(f"curated {src.name} -> {rel} id={pid}")
+        except Exception as e:
+            log({"phase": "error", "ok": False, "src": str(src), "error": (str(e) + "
+" + traceback.format_exc())[:2000]})
+            print(f"error {src}: {e}")
+    log({"phase": "done", "curated": done, "skipped": skipped, "force": force})
+    print(f"done curated={done} skipped={skipped} force={force}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

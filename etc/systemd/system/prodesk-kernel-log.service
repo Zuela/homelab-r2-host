@@ -1,0 +1,14 @@
+[Unit]
+Description=Receive ProDesk kernel warnings (UDP 6666) into the journal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/socat -u UDP4-RECV:6666,bind=192.168.5.11,range=192.168.5.10/32 STDOUT
+Restart=always
+RestartSec=5
+DynamicUser=yes
+SyslogIdentifier=prodesk-kernel
+
+[Install]
+WantedBy=multi-user.target

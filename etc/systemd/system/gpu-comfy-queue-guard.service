@@ -1,0 +1,12 @@
+[Unit]
+Description=Unload Ollama when ComfyUI queue is busy (shared GPU guard)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gpu-comfy-queue-guard
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

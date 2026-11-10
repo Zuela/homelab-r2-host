@@ -1,0 +1,4 @@
+# Sage verdict lines into the team-intake API, every 5 minutes (andr-ops task 0026, Phase 2 authorized by Dan 2026-10-31).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /usr/local/sbin/andr-team-intake-bridge >>/var/log/andr-team-intake-bridge.log 2>&1

@@ -1,0 +1,4 @@
+#!/bin/bash
+export GIT_ASKPASS=/usr/local/sbin/gitea-vault-sync-askpass
+export GIT_TERMINAL_PROMPT=0
+exec /usr/bin/python3 /usr/local/sbin/lif-muse-outbox-pull.py "$@"

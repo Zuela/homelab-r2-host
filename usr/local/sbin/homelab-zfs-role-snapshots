@@ -1,0 +1,53 @@
+#!/bin/bash
+# Local ZFS safety snapshots for role datasets (independent of PBS).
+# Keep counts small; destroy oldest beyond retention.
+# 2026-11-03: added tank root (agent-net, andr, ingest, muse, vault-media) and tank/matrix; ComfyUI datasets removed (Dan). tank is not recursive.
+
+LOG_TAG=homelab-zfs-role-snapshots
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+
+snap_one() {
+  ds="$1"
+  label="$2"
+  keep="$3"
+  name="${ds}@${label}-${ts}"
+  if zfs snapshot "$name"; then
+    logger -t "$LOG_TAG" "created $name"
+  else
+    logger -t "$LOG_TAG" "FAILED snapshot $name"
+    return 1
+  fi
+  # prune older label snaps
+  zfs list -H -t snapshot -o name -s creation | awk -v p="${ds}@${label}-" "index(\$0,p)==1 {print}" | head -n -"$keep" | while read -r old; do
+    [ -n "$old" ] || continue
+    zfs destroy "$old" && logger -t "$LOG_TAG" "destroyed $old" || logger -t "$LOG_TAG" "FAILED destroy $old"
+  done
+}
+
+mode="${1:-nightly}"
+case "$mode" in
+  nightly)
+    snap_one tank nightly 7
+    snap_one tank/matrix nightly 7
+    snap_one tank/matrix/data nightly 7
+    snap_one tank/matrix/media nightly 7
+    snap_one tank/studio-homelab nightly 7
+    snap_one tank/andr-bundles nightly 7
+    ;;
+  weekly)
+    snap_one tank/andr-bundles weekly 8
+    ;;
+  once)
+    snap_one tank nightly 7
+    snap_one tank/matrix nightly 7
+    snap_one tank/matrix/data nightly 7
+    snap_one tank/matrix/media nightly 7
+    snap_one tank/studio-homelab nightly 7
+    snap_one tank/andr-bundles nightly 7
+    snap_one tank/andr-bundles weekly 8
+    ;;
+  *)
+    echo "usage: $0 nightly|weekly|once" >&2
+    exit 2
+    ;;
+esac

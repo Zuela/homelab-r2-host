@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Saves the Sage triage bot token on r2 (andr-ops task 0026). Run through: ssh -t r2-ts /usr/local/sbin/andr-slack-setup
+Asks for the token without showing it, checks it with Slack, and saves it. This does not turn the listener on or touch any channel."""
+import getpass, json, os, sys, urllib.parse, urllib.request
+
+OUT = os.environ.get('SLACK_SETUP_FILE', '/root/.secrets/andr/team-intake-slack.env')
+token = getpass.getpass('Paste the Bot User OAuth Token (starts xoxb-), then press Return. It will not show: ').strip()
+if not token.startswith('xoxb-'):
+    sys.exit('That is not a bot token. It should start with xoxb-. Nothing was saved.')
+req = urllib.request.Request('https://slack.com/api/auth.test', urllib.parse.urlencode({}).encode(), {'Authorization': f'Bearer {token}'})
+r = json.load(urllib.request.urlopen(req, timeout=20))
+if not r.get('ok'):
+    sys.exit(f'Slack refused the token: {r.get("error")}. Nothing was saved.')
+keep = [l for l in open(OUT) if l.startswith('INTAKE_CHANNEL_ID=')] if os.path.exists(OUT) else []
+fd = os.open(OUT, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, 'w') as f:
+    f.write(f'SLACK_BOT_TOKEN={token}\n' + ''.join(keep))
+print(f'Done. Saved for bot {r.get("user")} in workspace {r.get("team")}. This does not change the running listener. Tell r2 "token saved".')

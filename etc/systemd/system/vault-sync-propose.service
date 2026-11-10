@@ -1,0 +1,18 @@
+[Unit]
+Description=vault-sync propose API for Hermes (:8011)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=VSP_HOST=0.0.0.0
+Environment=VSP_PORT=8011
+Environment=VSP_TOKEN_FILE=/root/.creds/vault-sync-propose.token
+Environment=VSP_ALLOW_IPS=192.168.4.63,127.0.0.1,192.168.5.11
+Environment=VSP_COMMIT_BIN=/usr/local/sbin/vault-sync-commit
+ExecStart=/usr/bin/python3 /usr/local/sbin/vault-sync-propose-api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

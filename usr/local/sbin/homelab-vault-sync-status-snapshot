@@ -1,0 +1,34 @@
+#!/bin/bash
+OUT=/var/lib/homelab-status/vault-sync.json
+REPO=/tank/agent-net/vault-sync/repo
+python3 - <<'PY'
+import json, os, pathlib, subprocess, datetime
+repo = pathlib.Path("/tank/agent-net/vault-sync/repo")
+outp = pathlib.Path(os.environ.get("OUT", "/var/lib/homelab-status/vault-sync.json"))
+out = {
+  "ok": True,
+  "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+  "clone_url": "http://192.168.4.29:3000/homelab/vault-sync.git",
+  "worktree": str(repo),
+  "commits": [],
+  "inbox_files": [],
+}
+if repo.is_dir():
+    try:
+        log = subprocess.check_output(
+            ["git", "-C", str(repo), "log", "-5", "--pretty=format:%h|%ad|%s", "--date=iso-strict"],
+            text=True,
+        )
+        for line in log.splitlines():
+            if not line.strip():
+                continue
+            h, d, s = line.split("|", 2)
+            out["commits"].append({"hash": h, "date": d, "subject": s})
+    except Exception as e:
+        out["git_error"] = str(e)
+    inbox = repo / "inbox"
+    if inbox.is_dir():
+        out["inbox_files"] = sorted(p.name for p in inbox.glob("*.md"))
+outp.write_text(json.dumps(out, indent=2) + "\n")
+print("wrote", outp, "commits", len(out["commits"]))
+PY

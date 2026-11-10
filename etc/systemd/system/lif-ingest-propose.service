@@ -1,0 +1,18 @@
+[Unit]
+Description=LIF ingest propose API for Hermes (:8012)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=LIF_API_HOST=0.0.0.0
+Environment=LIF_API_PORT=8012
+Environment=LIF_API_TOKEN_FILE=/root/.creds/lif-ingest-propose.token
+Environment=LIF_API_ALLOW_IPS=192.168.4.63,127.0.0.1,192.168.5.11
+Environment=LIF_INBOX=/tank/ingest/inbox
+ExecStart=/usr/bin/python3 /usr/local/sbin/lif-ingest-propose-api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

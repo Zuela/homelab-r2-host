@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Send one alert to the Matrix homelab-alerts room, plain text, with a title line (Dan 2026-11-02). Usage: lab-notify TITLE < message.
+Joins the room if it has been invited. Falls back to ntfy if Matrix fails, so an alert is never dropped."""
+import json, subprocess, sys
+sys.path[:0] = ['/usr/local/sbin', '/usr/local/lib/andr']
+from matrix_client_simple import MatrixClient
+from matrix_format import render
+
+title, msg = sys.argv[1], sys.stdin.read().strip()
+try:
+    room = json.load(open('/root/.creds/matrix-namespace-rooms.json'))['homelab_alerts_room_id']
+    c = MatrixClient()
+    c.ensure_token()
+    try:
+        c.join(room)
+    except Exception:
+        pass
+    c.send_text(room, f'{title}\n{msg}', html=render(title, msg))
+    print('sent to Matrix')
+except Exception as e:
+    print(f'Matrix failed: {str(e)[:160]}, using ntfy')
+    fallback = '. /root/.creds/ntfy; curl -fsS -m 10 -H "Authorization: Bearer $(cat "$NTFY_TOKEN_FILE")" -H "Title: $1" --data-binary @- "$NTFY_BASE_URL/homelab-alerts" >/dev/null'
+    sys.exit(subprocess.run(['bash', '-c', fallback, '_', title], input=msg, text=True).returncode)

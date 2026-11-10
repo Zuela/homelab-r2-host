@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""lab-doc-drift (2026-11-10, Dan asked). Checks that the one canonical homelab doc,
+/tank/studio-homelab/ops/ARCHITECTURE.md, still matches the live system and that every other
+copy of the homelab doc says it is historical.
+
+  lab-doc-drift          run checks, write ops/DOC-DRIFT.md + /var/lib/homelab-status/doc-drift.json,
+                         alert through lab-notify only when the set of findings changes
+  lab-doc-drift --print  run checks and print, write and alert nothing
+
+Checks:
+  1 CT grid      every CT in Proxmox is in the grid with the same hostname, IP and static/dhcp mode
+  2 cron jobs    every /etc/cron.d job is named somewhere in ARCHITECTURE.md
+  3 units        every enabled custom unit in /etc/systemd/system is named in ARCHITECTURE.md;
+                 every "Always-on host service" listed is active
+  4 IP-PLAN      ops/IP-PLAN.md rows match Proxmox; if not, regenerates it with `lab-ip plan`
+  5 copies       other homelab docs (tank, /root, vault) carry a historical banner in their first lines
+  6 freshness    DECISIONS.md entries dated after the "Current as of" date in ARCHITECTURE.md
+Ignore a finding by putting its key (shown in brackets) on a line of /etc/lab-doc-drift.ignore.
+"""
+import datetime, glob, json, os, re, subprocess, sys
+
+os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+OPS = '/tank/studio-homelab/ops'
+ARCH = f'{OPS}/ARCHITECTURE.md'
+DECISIONS = f'{OPS}/DECISIONS.md'
+IPPLAN = f'{OPS}/IP-PLAN.md'
+REPORT_MD = f'{OPS}/DOC-DRIFT.md'
+REPORT_JSON = '/var/lib/homelab-status/doc-drift.json'
+STATE = '/var/lib/lab-doc-drift/last'
+IGNORE = '/etc/lab-doc-drift.ignore'
+VAULT = '/home/obsidian/vaults/zueyrebro'
+# Known copies of the homelab doc that must say they are historical.
+COPIES = [
+    '/tank/studio-homelab/Homelab.md',
+    '/tank/studio-homelab/homelab-plan-status.md',
+    '/tank/studio-homelab/homelab-integrations.md',
+    '/root/Homelab.md',
+    '/root/homelab-plan-status.md',
+    '/root/homelab-integrations.md',
+    f'{VAULT}/2 - Areas/Home/Homelab.md',
+]
+# A banner counts only if it says this doc is historical AND points at the canonical one.
+HIST_RE = re.compile(r'(historical|no longer maintained|superseded)[^\n]*ARCHITECTURE\.md', re.I)
+# Docs elsewhere that claim to be the current one get flagged too.
+CLAIM_RE = re.compile(r'single current source of truth|the one current homelab doc|ops source of truth', re.I)
+SYSTEM_CRON = {'e2scrub_all', 'zfsutils-linux', 'vzdump'}
+
+
+def sh(cmd):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout
+
+
+def read(path):
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def live_cts():
+    cts = {}
+    for line in sh('pct list').splitlines()[1:]:
+        parts = line.split()
+        if not parts:
+            continue
+        ct, status = parts[0], parts[1]
+        cfg = sh(f'pct config {ct}')
+        host = re.search(r'^hostname: (\S+)', cfg, re.M)
+        ip = re.search(r'\bip=([^,/\s]+)', cfg)
+        mode, addr = ('dhcp', None) if (ip and ip.group(1) == 'dhcp') else ('static', ip.group(1) if ip else None)
+        if mode == 'dhcp' and status == 'running':
+            out = sh(f'pct exec {ct} -- ip -4 -o addr show eth0').split()
+            addr = out[3].split('/')[0] if len(out) > 3 else None
+        cts[ct] = {'hostname': host.group(1) if host else '', 'ip': addr, 'mode': mode, 'status': status}
+    return cts
+
+
+def doc_grid(arch):
+    grid = {}
+    for m in re.finditer(r'^\|\s*(\d{3})\s*\|\s*([^|]+?)\s*\|\s*([\d.]+)\s*\|\s*([^|]+?)\s*\|', arch, re.M):
+        grid[m.group(1)] = {'hostname': m.group(2), 'ip': m.group(3),
+                            'mode': 'dhcp' if m.group(4).lower().startswith('dhcp') else 'static'}
+    return grid
+
+
+def check_grid(arch, cts, add):
+    grid = doc_grid(arch)
+    for ct, live in cts.items():
+        doc = grid.get(ct)
+        if not doc:
+            add(f'grid-missing-{ct}', f'CT {ct} ({live["hostname"]}, {live["ip"]}, {live["status"]}) is not in the container grid')
+            continue
+        if doc['hostname'] != live['hostname']:
+            add(f'grid-host-{ct}', f'CT {ct} hostname is {live["hostname"]}, grid says {doc["hostname"]}')
+        if live['ip'] and doc['ip'] != live['ip']:
+            add(f'grid-ip-{ct}', f'CT {ct} IP is {live["ip"]}, grid says {doc["ip"]}')
+        if doc['mode'] != live['mode']:
+            add(f'grid-mode-{ct}', f'CT {ct} addressing is {live["mode"]}, grid says {doc["mode"]}')
+    for ct in grid:
+        if ct not in cts:
+            add(f'grid-gone-{ct}', f'CT {ct} ({grid[ct]["hostname"]}) is in the grid but not in Proxmox')
+
+
+def check_cron(arch, add):
+    for path in sorted(glob.glob('/etc/cron.d/*')):
+        name = os.path.basename(path)
+        # cron ignores files with dots in the name, so those are disabled or backups
+        if '.' in name or name in SYSTEM_CRON:
+            continue
+        if name not in arch:
+            add(f'cron-{name}', f'/etc/cron.d/{name} is not named in ARCHITECTURE.md')
+
+
+def check_units(arch, add):
+    for path in sorted(glob.glob('/etc/systemd/system/*.service') + glob.glob('/etc/systemd/system/*.timer')):
+        if os.path.islink(path):
+            continue
+        unit = os.path.basename(path)
+        base = unit.rsplit('.', 1)[0]
+        if sh(f'systemctl is-enabled {unit}').strip() != 'enabled':
+            continue
+        if base not in arch:
+            add(f'unit-{unit}', f'{unit} is enabled on r2 but not named in ARCHITECTURE.md')
+    m = re.search(r'^Always-on host services:\s*(.+)$', arch, re.M)
+    for svc in (re.split(r'[,\s]+', m.group(1).rstrip('.')) if m else []):
+        if svc and sh(f'systemctl is-active {svc}').strip() != 'active':
+            add(f'down-{svc}', f'{svc} is listed as always-on but is not active')
+
+
+def check_ipplan(cts, add, fix):
+    plan = read(IPPLAN) or ''
+    rows = {m.group(2): m.group(1) for m in re.finditer(r'^\|\s*([\d.]+|\(stopped\))\s*\|\s*(\d{3})\s*\|', plan, re.M)}
+    stale = [ct for ct, live in cts.items() if live['ip'] and rows.get(ct) != live['ip']]
+    stale += [ct for ct in rows if ct not in cts]
+    if not stale:
+        return
+    if fix:
+        sh('lab-ip plan')
+        add('ipplan-regenerated', f'IP-PLAN.md was stale for CT {", ".join(sorted(set(stale)))}; regenerated with lab-ip plan', level='info')
+    else:
+        add('ipplan-stale', f'IP-PLAN.md is stale for CT {", ".join(sorted(set(stale)))} (run lab-ip plan)')
+
+
+def check_copies(add):
+    paths = set(COPIES)
+    for root in ('/tank/studio-homelab', VAULT):
+        for path in glob.glob(f'{root}/**/*.md', recursive=True):
+            if '.bak' in path or '/4 - Archive/' in path or '/backups/' in path:
+                continue
+            head = '\n'.join((read(path) or '').splitlines()[:12])
+            if CLAIM_RE.search(head):
+                paths.add(path)
+    for path in sorted(paths):
+        if path == ARCH:
+            continue
+        text = read(path)
+        if text is None:
+            continue
+        head = '\n'.join(text.splitlines()[:12])
+        if not HIST_RE.search(head):
+            add(f'copy-{path}', f'{path} has no historical banner pointing at ops/ARCHITECTURE.md (it may read as current)')
+
+
+def check_freshness(arch, add):
+    m = re.search(r'Current as of (\d{4}-\d{2}-\d{2})', arch)
+    if not m:
+        add('arch-no-date', 'ARCHITECTURE.md has no "Current as of YYYY-MM-DD" line')
+        return
+    as_of = m.group(1)
+    newer = []
+    for line in (read(DECISIONS) or '').splitlines():
+        d = re.match(r'^- (\d{4}-\d{2}-\d{2})\b[^:]*:\s*(.*)', line)
+        if d and d.group(1) > as_of:
+            newer.append(f'{d.group(1)}: {d.group(2)[:110]}')
+    if newer:
+        add(f'decisions-after-{as_of}-{len(newer)}',
+            f'{len(newer)} DECISIONS.md entries are newer than ARCHITECTURE.md "Current as of {as_of}". '
+            'Fold any that change the map into ARCHITECTURE.md, then bump the date:\n    ' + '\n    '.join(newer[-12:]),
+            level='info')
+
+
+def main():
+    fix = '--print' not in sys.argv
+    arch = read(ARCH) or ''
+    ignored = set((read(IGNORE) or '').split())
+    findings = []
+
+    def add(key, text, level='drift'):
+        if key not in ignored:
+            findings.append({'key': key, 'level': level, 'text': text})
+
+    cts = live_cts()
+    check_grid(arch, cts, add)
+    check_cron(arch, add)
+    check_units(arch, add)
+    check_ipplan(cts, add, fix)
+    check_copies(add)
+    check_freshness(arch, add)
+
+    now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+    drift = [f for f in findings if f['level'] == 'drift']
+    info = [f for f in findings if f['level'] == 'info']
+    lines = [f'- {f["text"]} [{f["key"]}]' for f in drift] or ['- none']
+    body = ('Drift (doc says one thing, r2 says another):\n' + '\n'.join(lines) +
+            '\n\nNotes:\n' + ('\n'.join(f'- {f["text"]}' for f in info) or '- none'))
+    if not fix:
+        print(body)
+        return
+
+    md = ('# Doc drift (generated by /usr/local/sbin/lab-doc-drift, do not hand-edit)\n\n'
+          f'Canonical doc: {ARCH}. Last check {now}. Fix a finding by updating ARCHITECTURE.md '
+          '(or the copy), or ignore it by adding its key to /etc/lab-doc-drift.ignore.\n\n' + body + '\n')
+    # only rewrite when the findings change, so the file's mtime means something
+    if (read(REPORT_MD) or '').split('\n', 3)[-1] != md.split('\n', 3)[-1]:
+        with open(REPORT_MD, 'w') as f:
+            f.write(md)
+    os.makedirs(os.path.dirname(REPORT_JSON), exist_ok=True)
+    with open(REPORT_JSON, 'w') as f:
+        json.dump({'checked': now, 'canonical': ARCH, 'drift': drift, 'info': info}, f, indent=1)
+
+    keys = '\n'.join(sorted(f['key'] for f in drift))
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    if keys != (read(STATE) or '').strip():
+        msg = (f'{len(drift)} doc drift finding(s) vs live r2:\n' + '\n'.join(lines) if drift
+               else 'ARCHITECTURE.md matches r2 again.')
+        subprocess.run(['lab-notify', 'Homelab doc drift'], input=msg + f'\nReport: {REPORT_MD}', text=True)
+        with open(STATE, 'w') as f:
+            f.write(keys + '\n')
+    print(f'{now} drift={len(drift)} info={len(info)}')
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,4 @@
+# Weekly curated projection from Mnemosyne (append-only)
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+20 5 * * 1 root /usr/local/sbin/homelab-mnemosyne-curated-project >> /var/log/homelab-mnemosyne-curated-project.log 2>&1

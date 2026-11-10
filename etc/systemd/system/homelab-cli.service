@@ -1,0 +1,19 @@
+[Unit]
+Description=homelab-cli daemon on r2 (HTTP + WebSocket for homelab agent surface)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/.homelab-cli
+Environment=HOMELAB_SOPS_KEY=/root/.sops/age.key
+Environment=HOMELAB_CLI_BIND_HOSTS=192.168.5.11,100.91.126.26
+Environment=HOMELAB_CLI_TS_WINDOW_S=60
+ExecStart=/usr/local/sbin/homelab-cli-start.sh
+ExecStopPost=-/usr/bin/rm -f /run/secrets/homelab-cli-secret.env
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

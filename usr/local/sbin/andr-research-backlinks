@@ -1,0 +1,20 @@
+#!/bin/bash
+# Named job research:backlinks (andr-ops task 0017). Pull, regenerate the angles:auto fences from angles.md,
+# commit only if something changed, push fast-forward only. A rejected push drops the local commit and retries next run.
+set -u
+R=/tank/andr/research
+ts=$(date +'%Y-%m-%d %H:%M')
+[ "$(git -C "$R" symbolic-ref --short HEAD)" = main ] || { echo "$ts not on main"; exit 1; }
+[ -z "$(git -C "$R" status --porcelain)" ] || { echo "$ts clone not clean"; exit 1; }
+git -C "$R" pull -q --ff-only || { echo "$ts pull failed"; exit 1; }
+python3 -I /usr/local/lib/andr/research_backlinks.py "$R" || { echo "$ts generator failed"; git -C "$R" checkout -q -- .; exit 1; }
+if [ -z "$(git -C "$R" status --porcelain)" ]; then echo "$ts no change at $(git -C "$R" rev-parse --short HEAD)"; exit 0; fi
+git -C "$R" add topics/theses/B-*.md
+git -C "$R" -c user.name=r2 -c user.email=r2@local commit -q -m "research:backlinks: regenerate angles:auto blocks (andr-ops task 0017)"
+if git -C "$R" push -q origin main; then
+  echo "$ts ok $(git -C "$R" rev-parse HEAD)"
+else
+  echo "$ts push rejected, local commit dropped, retries next run"
+  git -C "$R" reset -q --hard HEAD~1
+  exit 1
+fi

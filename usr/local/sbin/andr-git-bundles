@@ -1,0 +1,21 @@
+#!/bin/bash
+# Weekly git bundle of each AndR repo (all refs) into tank/andr-bundles (andr-ops task 0022).
+# The dataset is snapshotted weekly by homelab-zfs-role-snapshots. Keeps 8 bundles per repo.
+set -u
+DEST=/tank/andr-bundles
+KEEP=8
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+rc=0
+for repo in /tank/andr/*/; do
+  [ -d "$repo/.git" ] || continue
+  name=$(basename "$repo")
+  mkdir -p "$DEST/$name"
+  out="$DEST/$name/$name-$ts.bundle"
+  if git -C "$repo" fetch -q origin && git -C "$repo" bundle create -q "$out" --all && git -C "$repo" bundle verify -q "$out" >/dev/null 2>&1; then
+    echo "$ts ok $name $(du -h "$out" | cut -f1)"
+  else
+    echo "$ts FAILED $name"; rm -f "$out"; rc=1
+  fi
+  ls -1t "$DEST/$name"/*.bundle 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+done
+exit $rc

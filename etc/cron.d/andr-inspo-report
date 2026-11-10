@@ -1,0 +1,4 @@
+# Reports new #inspo drops as plain facts in the andr-ops 0026 Log, every 5 minutes (Dan 2026-11-04).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+3-58/5 * * * * root /usr/bin/python3 -I /usr/local/lib/andr/inspo_report.py >>/var/log/andr-inspo-report.log 2>&1

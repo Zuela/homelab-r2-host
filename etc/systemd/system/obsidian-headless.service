@@ -1,0 +1,19 @@
+[Unit]
+Description=Obsidian Headless continuous sync (zueyrebro)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=obsidian
+Group=obsidian
+WorkingDirectory=/home/obsidian
+# Always use this user's HOME so auth_token and sync config resolve correctly
+Environment=HOME=/home/obsidian
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/ob sync --path /home/obsidian/vaults/zueyrebro --continuous
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

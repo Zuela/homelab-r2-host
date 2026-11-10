@@ -1,0 +1,4 @@
+# Weekly git bundles of /tank/andr repos into tank/andr-bundles, andr-ops task 0022 (Dan approved 2026-10-28). Keeps 8.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+30 3 * * 0 root /usr/local/sbin/andr-git-bundles >>/var/log/andr-git-bundles.log 2>&1

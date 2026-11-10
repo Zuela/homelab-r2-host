@@ -1,0 +1,6 @@
+[Unit]
+Description=Kuma + vault-sync status snapshots into local run area
+[Service]
+Type=oneshot
+Environment=HOMELAB_STATUS_DIR=/var/lib/homelab-status
+ExecStart=/bin/bash -c '/usr/local/sbin/homelab-kuma-status-snapshot && /usr/local/sbin/homelab-vault-sync-status-snapshot'

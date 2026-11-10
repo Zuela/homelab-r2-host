@@ -1,0 +1,99 @@
+#!/bin/bash
+# lab-healthcheck v3 (2026-10-21: + duplicate IP check; v2 2026-10-14). Cron */15. Doc: /tank/studio-homelab/ops/ARCHITECTURE.md
+# v2: explicit PATH (cron lacked /usr/sbin so pct failed), Ollama + PBS checks,
+# ntfy push to homelab-alerts on state change only (FAIL->OK or OK->FAIL).
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/lab-healthcheck.log
+STATE_DIR=/var/lib/lab-healthcheck
+NTFY_ENV=/root/.creds/ntfy  # defines NTFY_BASE_URL + NTFY_TOKEN_FILE (ntfy.env uses other key names)
+NTFY_TOPIC=homelab-alerts
+PBS_STORE=r2-backup-target
+PBS_WARN=85
+PBS_FAIL=92
+mkdir -p "$STATE_DIR"
+TS=$(date -u +%FT%TZ)
+FAILS=()
+ok()   { echo "[$TS] OK   $1" >> "$LOG"; }
+fail() { echo "[$TS] FAIL $1" >> "$LOG"; FAILS+=("$1"); }
+warn() { echo "[$TS] WARN $1" >> "$LOG"; FAILS+=("WARN $1"); }
+echo "[$TS] start" >> "$LOG"
+
+# 1) Matrix via HTTP. The Caddy -> Synapse path is the actual authority.
+H=$(curl -s -o /dev/null -m 5 -w "%{http_code}" http://192.168.4.55:8008/health 2>/dev/null || echo dead)
+[ "$H" = 200 ] && ok "matrix          /health 200" || fail "matrix          /health $H"
+
+# 2) CT214: all three matrix containers running.
+CT214=$(pct exec 214 -- docker ps --format "{{.Names}}\t{{.Status}}" 2>&1 | tr "\n" "|")
+if echo "$CT214" | grep -q "matrix-caddy-1" && echo "$CT214" | grep -q "matrix-synapse-1" && echo "$CT214" | grep -q "matrix-db-1"; then
+  ok "ct214 matrix    3/3 containers running"
+else
+  fail "ct214 matrix    docker ps: $CT214"
+fi
+
+# 3) CT209: cloudflared tunnels running.
+CT209=$(pct exec 209 -- docker ps --format "{{.Names}}\t{{.Status}}" 2>&1 | tr "\n" "|")
+if echo "$CT209" | grep -q "cloudflared-tunnel" && echo "$CT209" | grep -q "cloudflared-jellyfin-tv"; then
+  ok "ct209 tunnel    cloudflared-tunnel + tv running"
+else
+  fail "ct209 tunnel    docker ps: $CT209"
+fi
+
+# 4) CT202: Ollama API answers on its pinned IP (outage 2026-10-07..14 went unnoticed).
+# Intentional pause (GPU handed to ComfyUI): touch $STATE_DIR/ollama-paused to skip; rm to resume.
+if [ -e "$STATE_DIR/ollama-paused" ]; then
+  echo "[$TS] SKIP ct202 ollama    paused since $(date -u -r "$STATE_DIR/ollama-paused" +%FT%TZ) (GPU for ComfyUI)" >> "$LOG"
+else
+  O=$(curl -s -o /dev/null -m 5 -w "%{http_code}" http://192.168.4.35:11434/api/tags 2>/dev/null || echo dead)
+  [ "$O" = 200 ] && ok "ct202 ollama    /api/tags 200" || fail "ct202 ollama    /api/tags $O"
+fi
+
+# 5) PBS datastore capacity.
+# pvesm reports an unreachable PBS as inactive with 0% used, which read as healthy until 2026-11-03.
+PS=$(pvesm status 2>/dev/null | awk -v s="$PBS_STORE" '$1==s{print $3}')
+P=$(pvesm status 2>/dev/null | awk -v s="$PBS_STORE" '$1==s{gsub("%","",$7); print int($7)}')
+if [ -z "$P" ]; then
+  fail "pbs             $PBS_STORE not listed by pvesm"
+elif [ "$PS" != active ]; then
+  fail "pbs             $PBS_STORE $PS"
+elif [ "$P" -ge "$PBS_FAIL" ]; then
+  fail "pbs             $PBS_STORE ${P}% used (>= ${PBS_FAIL})"
+elif [ "$P" -ge "$PBS_WARN" ]; then
+  warn "pbs             $PBS_STORE ${P}% used (>= ${PBS_WARN})"
+else
+  ok "pbs             $PBS_STORE ${P}% used"
+fi
+
+# 6) Duplicate IPs: each CT's IP must resolve to its own MAC as seen from another CT.
+# Added 2026-10-21 after an LG TV on 192.168.4.49 broke the tunnel for 11h with every service check green.
+dupcheck() {  # $1 = vantage CT, $2 = "ip mac" lines to check from it
+  local ips; ips=$(echo "$2" | awk '{print $1}' | tr "\n" " ")
+  local seen; seen=$(pct exec "$1" -- sh -c "for ip in $ips; do ping -c1 -W1 -q \$ip >/dev/null 2>&1; ip neigh show \$ip | awk '{print \$1, \$5}'; done" 2>/dev/null)
+  echo "$2" | while read -r ip mac; do
+    got=$(echo "$seen" | awk -v i="$ip" '$1==i{print $2}')
+    [ -n "$got" ] && [ "$got" != "$mac" ] && echo "$ip expected $mac seen $got"
+  done
+}
+EXPECT=$(for c in $(pct list | awk 'NR>1 && $2=="running"{print $1}'); do
+  ip=$(pct exec "$c" -- ip -4 -o addr show eth0 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')
+  mac=$(pct config "$c" | grep -o 'hwaddr=[^,]*' | head -1 | cut -d= -f2 | tr A-Z a-z)
+  [ -n "$ip" ] && echo "$c $ip $mac"
+done)
+DUPS=$( { dupcheck 214 "$(echo "$EXPECT" | awk '$1!=214{print $2, $3}')"; dupcheck 213 "$(echo "$EXPECT" | awk '$1==214{print $2, $3}')"; } )
+[ -z "$DUPS" ] && ok "lan ip          no duplicate CT IPs" || fail "lan ip          duplicate: $(echo "$DUPS" | tr "\n" ";")"
+
+echo "[$TS] done" >> "$LOG"
+
+# ntfy on state change only, so a stuck failure does not page every 15 min.
+NOW=$( [ ${#FAILS[@]} -eq 0 ] && echo OK || printf "%s\n" "${FAILS[@]}" )
+PREV=$(cat "$STATE_DIR/last" 2>/dev/null || echo OK)
+if [ "$NOW" != "$PREV" ] && [ -r "$NTFY_ENV" ]; then
+  . "$NTFY_ENV"
+  TOKEN=$(cat "$NTFY_TOKEN_FILE" 2>/dev/null)
+  if [ "$NOW" = OK ]; then MSG="r2 lab-healthcheck recovered: all checks OK"; PRIO=default
+  else MSG=$(printf "r2 lab-healthcheck:\n%s" "$NOW"); PRIO=high; fi
+  curl -fsS -m 5 -H "Authorization: Bearer $TOKEN" -H "Title: r2 healthcheck" -H "Priority: $PRIO" \
+    -d "$MSG" "$NTFY_BASE_URL/$NTFY_TOPIC" >/dev/null 2>&1 \
+    && echo "[$TS] ntfy  sent state change" >> "$LOG" \
+    || echo "[$TS] ntfy  send FAILED" >> "$LOG"
+fi
+printf "%s" "$NOW" > "$STATE_DIR/last"

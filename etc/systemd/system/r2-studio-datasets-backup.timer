@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily PBS backup timer for studio role datasets
+
+[Timer]
+OnCalendar=*-*-* 03:45:00
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

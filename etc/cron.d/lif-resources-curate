@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Full runs (model-written notes too, frees ComfyUI VRAM first when needed): 06:40 and 18:40.
+40 6,18 * * * root /usr/bin/flock -w 600 /run/lif-curate.lock env LIF_CURATE_MAX_FILES=20 /usr/bin/python3 /usr/local/sbin/lif-resources-curate.py >> /var/log/lif-resources-curate.cron.log 2>&1
+# Hourly, other hours (2026-10-29, Dan): Sage pass-through notes only. No model, no GPU; quiet when nothing new.
+40 0-5,7-17,19-23 * * * root /usr/bin/flock -n /run/lif-curate.lock env LIF_CURATE_MAX_FILES=20 LIF_CURATE_PASSTHROUGH_ONLY=1 /usr/bin/python3 /usr/local/sbin/lif-resources-curate.py >> /var/log/lif-resources-curate.cron.log 2>&1

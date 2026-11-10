@@ -1,0 +1,43 @@
+#!/bin/bash
+# lab-git-snapshot (2026-11-10, Dan asked). Hourly catch-all commit for the two homelab repos.
+#   /tank/studio-homelab  -> homelab/ops      (docs, git in place; .gitignore keeps vault-drop, status, ops/backups out)
+#   /var/lib/r2-host-git  -> homelab/r2-host  (copy of host scripts, cron, custom units, Proxmox CT/job/storage configs)
+# Agents still commit their own changes with a real message; this only picks up what nobody committed.
+# gitleaks checks staged changes first; on a hit nothing is committed and lab-notify alerts.
+# Pushes to origin (Gitea) when a remote is set; Gitea push-mirrors to GitHub.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DOCS=/tank/studio-homelab
+HOST=/var/lib/r2-host-git
+TS=$(date -u +%Y-%m-%dT%H:%MZ)
+
+sync_host() {
+  local x=(--exclude='*.bak*' --exclude='__pycache__' --exclude='*.pyc')
+  mkdir -p $HOST/usr/local/lib $HOST/etc/systemd/system $HOST/etc/pve/lxc
+  rsync -a --delete "${x[@]}" /usr/local/sbin/ $HOST/usr/local/sbin/
+  rsync -a --delete "${x[@]}" /usr/local/lib/andr $HOST/usr/local/lib/
+  rsync -a --delete "${x[@]}" /etc/cron.d/ $HOST/etc/cron.d/
+  # custom units only: real files and drop-in dirs, not the enablement symlinks
+  rsync -a --delete --no-links --exclude='*.wants/' --exclude='*.requires/' "${x[@]}" /etc/systemd/system/ $HOST/etc/systemd/system/
+  rsync -a --delete /etc/pve/lxc/ $HOST/etc/pve/lxc/
+  cp /etc/pve/jobs.cfg /etc/pve/storage.cfg $HOST/etc/pve/
+}
+
+snapshot() {  # repo
+  local repo=$1
+  cd "$repo" || return
+  git add -A
+  git diff --cached --quiet && return
+  if ! gitleaks protect --staged --source . --exit-code 1 >/tmp/lab-git-snapshot.leaks 2>&1; then
+    git reset -q
+    lab-notify "Git snapshot blocked: possible secret" <<<"gitleaks flagged staged changes in $repo at $TS. Nothing committed. Run: cd $repo && git add -A && gitleaks protect --staged -v"
+    return
+  fi
+  git commit -qm "auto: $(git diff --cached --name-only | wc -l) file(s) changed, snapshot $TS" \
+    -m "$(git diff --cached --stat | tail -15)"
+  git remote get-url origin >/dev/null 2>&1 && git push -q origin main
+  echo "$TS committed $repo"
+}
+
+sync_host
+snapshot $DOCS
+snapshot $HOST

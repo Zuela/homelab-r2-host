@@ -1,0 +1,4 @@
+# Named job research:backlinks, andr-ops task 0017 (Dan approved 2026-10-22, individual cron under D3 2026-10-28). Monthly on the 1st, 5 minutes after the 14:00 pull; the job pulls first itself.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+5 14 1 * * root /usr/local/sbin/andr-research-backlinks >>/var/log/andr-research-backlinks.log 2>&1

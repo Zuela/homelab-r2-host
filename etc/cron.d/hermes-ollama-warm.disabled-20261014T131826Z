@@ -1,0 +1,1 @@
+*/30 * * * * root /tank/homelab-docs/agent-net/scripts/hermes-ollama-warm.sh >/var/log/hermes-ollama-warm.log 2>&1

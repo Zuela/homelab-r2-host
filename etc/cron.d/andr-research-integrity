@@ -1,0 +1,4 @@
+# research:integrity, andr-ops task 0021 (Dan approved 2026-10-28). Read-only on research main; logs findings to the 0021 task.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 9 * * 4 root /usr/local/sbin/andr-research-integrity >>/var/log/andr-research-integrity.log 2>&1

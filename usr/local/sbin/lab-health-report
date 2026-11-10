@@ -1,0 +1,13 @@
+#!/bin/bash
+# Sends through lab-notify. daily: one alert only when a backup has a problem. weekly: a summary of backups, jobs, and Sage's runs. --dry prints instead of sending.
+set -u
+mode=${1:-weekly}; ts=$(date +'%Y-%m-%d %H:%M')
+msg=$(python3 -I /usr/local/lib/andr/lab_health.py "$mode") || { msg="The health check itself failed on r2. See /var/log/lab-health.log"; echo "$ts check failed"; }
+[ -z "$msg" ] && { echo "$ts $mode clean"; exit 0; }
+[ "${2:-}" = --dry ] && { printf '%s\n' "$msg"; exit 0; }
+title="r2 weekly health"; [ "$mode" = daily ] && title="r2 backup problem"
+if out=$(printf '%s' "$msg" | /usr/local/sbin/lab-notify "$title" 2>&1); then
+  echo "$ts $mode $out"
+else
+  echo "$ts $mode send FAILED: $out"
+fi

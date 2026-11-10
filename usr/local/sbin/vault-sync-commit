@@ -1,0 +1,38 @@
+#!/bin/bash
+# Commit markdown into homelab/vault-sync (agent outbox → Obsidian Git).
+# Usage: vault-sync-commit [relative/path.md]   # default: inbox/YYYY-MM-DD-note.md from stdin or --message
+set -u
+REPO=/tank/agent-net/vault-sync/repo
+export GIT_ASKPASS=/usr/local/sbin/gitea-vault-sync-askpass
+export GIT_TERMINAL_PROMPT=0
+cd "$REPO" || exit 1
+git pull --rebase origin main 2>/dev/null || git pull origin main 2>/dev/null || true
+REL="${1:-}"
+MSG="${VAULT_SYNC_MESSAGE:-agent vault-sync commit}"
+if [ -z "$REL" ]; then
+  DAY=$(date -u +%F)
+  REL="inbox/${DAY}-r2-note.md"
+  mkdir -p "$(dirname "$REPO/$REL")"
+  if [ -t 0 ]; then
+    cat > "$REPO/$REL" << NOTE
+# R2 vault-sync note ($DAY)
+
+Automated outbox from r2. Pull with Obsidian Git into PARA as needed.
+NOTE
+  else
+    cat > "$REPO/$REL"
+  fi
+else
+  mkdir -p "$(dirname "$REPO/$REL")"
+  if [ ! -t 0 ]; then
+    cat > "$REPO/$REL"
+  fi
+fi
+git add -A
+if git diff --cached --quiet; then
+  echo "nothing_to_commit"
+  exit 0
+fi
+git -c user.name="r2-vault-sync" -c user.email="vault-sync@homelab.local" commit -m "$MSG"
+git push origin HEAD:main
+echo "committed $REL"

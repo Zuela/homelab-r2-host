@@ -1,0 +1,76 @@
+#!/bin/bash
+# Free GPU headroom for Hermes agent (Frigate stays up).
+set -u
+MIN_FREE_MIB=${MIN_FREE_MIB:-8192}
+COMFY_URL=${COMFY_URL:-http://192.168.4.41:8188}
+OLLAMA_CT=${OLLAMA_CT:-202}
+COMFY_CT=${COMFY_CT:-203}
+
+free_mib() {
+  nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d " "
+}
+
+used_mib() {
+  nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d " "
+}
+
+echo "[gpu-ready-hermes] before: used=$(used_mib)MiB free=$(free_mib)MiB"
+
+# 1) Stop ALL loaded Ollama runners (dynamic). qwen3-agent alone can hold ~11GB at 40k ctx.
+echo "[gpu-ready-hermes] stopping loaded Ollama models..."
+MODELS=$(pct exec "$OLLAMA_CT" -- docker exec ollama ollama ps 2>/dev/null | awk "NR>1 {print \$1}" || true)
+if [ -n "${MODELS:-}" ]; then
+  while IFS= read -r m; do
+    [ -z "$m" ] && continue
+    echo "[gpu-ready-hermes] ollama stop $m"
+    pct exec "$OLLAMA_CT" -- docker exec ollama ollama stop "$m" >/dev/null 2>&1 || true
+  done <<EOFMODELS
+$MODELS
+EOFMODELS
+else
+  # Fallback known heavies if ps parsing empty
+  for m in qwen3-agent:latest qwen3-agent qwen3-agent-32k qwen3:8b qwen3-vl:8b gemma3:12b deepseek-r1:14b llama3.2:3b; do
+    pct exec "$OLLAMA_CT" -- docker exec ollama ollama stop "$m" >/dev/null 2>&1 || true
+  done
+fi
+sleep 3
+
+# 2) Ask Comfy to unload weights
+curl -s -m 8 -X POST "$COMFY_URL/free" \
+  -H "Content-Type: application/json" \
+  -d "{\"unload_models\":true,\"free_memory\":true}" >/dev/null 2>&1 || true
+sleep 2
+
+FREE=$(free_mib)
+if [ -n "$FREE" ] && [ "$FREE" -lt "$MIN_FREE_MIB" ]; then
+  echo "[gpu-ready-hermes] free=${FREE}MiB < ${MIN_FREE_MIB}MiB - restarting comfyui"
+  pct exec "$COMFY_CT" -- systemctl restart comfyui >/dev/null 2>&1 || true
+  sleep 6
+fi
+
+# 3) Re-check; one more ollama sweep if still tight
+FREE=$(free_mib)
+if [ -n "$FREE" ] && [ "$FREE" -lt "$MIN_FREE_MIB" ]; then
+  MODELS=$(pct exec "$OLLAMA_CT" -- docker exec ollama ollama ps 2>/dev/null | awk "NR>1 {print \$1}" || true)
+  if [ -n "${MODELS:-}" ]; then
+    while IFS= read -r m; do
+      [ -z "$m" ] && continue
+      echo "[gpu-ready-hermes] second pass ollama stop $m"
+      pct exec "$OLLAMA_CT" -- docker exec ollama ollama stop "$m" >/dev/null 2>&1 || true
+    done <<EOFMODELS2
+$MODELS
+EOFMODELS2
+    sleep 3
+  fi
+fi
+
+FREE=$(free_mib)
+USED=$(used_mib)
+echo "[gpu-ready-hermes] after: used=${USED}MiB free=${FREE}MiB"
+if [ -n "$FREE" ] && [ "$FREE" -lt "$MIN_FREE_MIB" ]; then
+  echo "[gpu-ready-hermes] WARN: still below ${MIN_FREE_MIB}MiB free (Frigate/other may remain)"
+  nvidia-smi --query-compute-apps=pid,used_memory,process_name --format=csv
+  exit 2
+fi
+echo "[gpu-ready-hermes] OK"
+exit 0

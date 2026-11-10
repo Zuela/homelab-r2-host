@@ -1,0 +1,12 @@
+[Unit]
+Description=DNAT proxy on r2: 192.168.5.11:11434 -> ollama-host 192.168.4.35:11434 (Lane B / Hermes)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ollama-on-r2-nat-proxy.sh start
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1 @@
+*/15 * * * * root /usr/local/sbin/lab-healthcheck >/dev/null 2>&1

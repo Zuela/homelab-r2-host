@@ -1,0 +1,7 @@
+#!/bin/bash
+# non-interactive credentials for vault-sync only
+case "$1" in
+  Username*) echo admin ;;
+  Password*) cat /root/.creds/gitea-admin-token ;;
+  *) exit 1 ;;
+esac

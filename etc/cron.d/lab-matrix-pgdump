@@ -1,0 +1,4 @@
+# Nightly Synapse database dump, before the 03:15 ZFS snapshots.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+5 3 * * * root /usr/local/sbin/lab-matrix-pgdump >> /var/log/lab-matrix-pgdump.log 2>&1

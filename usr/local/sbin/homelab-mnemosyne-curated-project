@@ -1,0 +1,30 @@
+#!/bin/bash
+# Project high-signal Mnemosyne recalls into curated.md (append-only snapshot).
+# Runs on r2 host; executes mnemosyne inside CT 212.
+set -u
+OUT="/tank/studio-homelab/agent-net/agent-memory/curated.md"
+LOG="/var/log/homelab-mnemosyne-curated-project.log"
+TS=$(date -u +%Y-%m-%dT%H:%MZ)
+QUERIES=(
+  "Hermes CT identity"
+  "Ollama endpoint"
+  "vault_sync_propose"
+  "storage split studio-comfy"
+  "PBS secrets backup"
+)
+
+{
+  echo
+  echo "## Auto projection snapshot ($TS)"
+  echo
+  echo "Source: Mnemosyne recall top hits (CT 212). Human bullets above remain authoritative."
+  echo
+  for q in "${QUERIES[@]}"; do
+    echo "### query: $q"
+    pct exec 212 -- /root/.hermes/venvs/mnemosyne/bin/mnemosyne recall "$q" 3 2>/dev/null | sed -n "1,20p" | sed "s/^/- /"
+    echo
+  done
+} >>"$OUT"
+
+chown 1000:1000 "$OUT" 2>/dev/null || true
+echo "$TS projected ok" >>"$LOG"

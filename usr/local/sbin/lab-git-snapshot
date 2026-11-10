@@ -18,8 +18,8 @@ sync_host() {
   rsync -a --delete "${x[@]}" /etc/cron.d/ $HOST/etc/cron.d/
   # custom units only: real files and drop-in dirs, not the enablement symlinks
   rsync -a --delete --no-links --exclude='*.wants/' --exclude='*.requires/' "${x[@]}" /etc/systemd/system/ $HOST/etc/systemd/system/ \
-    2> >(grep -v 'skipping non-regular file' >&2)
-  rsync -a --delete /etc/pve/lxc/ $HOST/etc/pve/lxc/
+    | grep -v 'skipping non-regular file'
+  rsync -a --delete --delete-excluded "${x[@]}" /etc/pve/lxc/ $HOST/etc/pve/lxc/
   cp /etc/pve/jobs.cfg /etc/pve/storage.cfg $HOST/etc/pve/
 }
 

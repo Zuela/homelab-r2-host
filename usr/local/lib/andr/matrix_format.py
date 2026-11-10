@@ -12,7 +12,8 @@ def render(title, message):
             fine.append(line[5:].split(':')[0])
         elif line.strip():
             other.append(line.strip())
-    parts = [f'<strong>{escape(title)}</strong>'] if title else []
+    # title in its own paragraph so clients do not run it into the first line (Dan 2026-11-10)
+    parts = [f'<p><strong>{escape(title)}</strong></p>'] if title else []
     parts += [f'<p>{escape(x)}</p>' for x in other]
     if bad:
         parts.append('<ul>' + ''.join(f'<li>{escape(x)}</li>' for x in bad) + '</ul>')

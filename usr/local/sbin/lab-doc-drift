@@ -224,9 +224,7 @@ def main():
     if keys != (read(STATE) or '').strip():
         msg = (f'{len(drift)} doc drift finding(s) vs live r2:\n' + '\n'.join(lines) if drift
                else 'ARCHITECTURE.md matches r2 again.')
-        # Header as the first body line, not the lab-notify title: matrix_format renders the title as a bare
-        # <strong> that some Matrix clients run into the next line (Dan 2026-11-10). Each body line is its own <p>.
-        subprocess.run(['lab-notify', ''], input=f'Homelab doc drift\n{msg}\nReport: {REPORT_MD}', text=True)
+        subprocess.run(['lab-notify', 'Homelab doc drift'], input=msg + f'\nReport: {REPORT_MD}', text=True)
         with open(STATE, 'w') as f:
             f.write(keys + '\n')
     print(f'{now} drift={len(drift)} info={len(info)}')

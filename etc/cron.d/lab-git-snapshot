@@ -1,0 +1,4 @@
+# Hourly catch-all git commit for homelab/ops (/tank/studio-homelab) and homelab/r2-host (/var/lib/r2-host-git). Dan 2026-11-10.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+50 * * * * root /usr/local/sbin/lab-git-snapshot >> /var/log/lab-git-snapshot.log 2>&1

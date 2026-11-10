@@ -1,0 +1,16 @@
+[Unit]
+Description=AV organizer: sort finished downloads into the Jellyfin library (TV/Movies/Misc)
+Documentation=file:///usr/local/sbin/av-organizer.py
+After=zfs-mount.service
+RequiresMountsFor=/tank/jellyfin/media /tank/qbittorrent/downloads
+
+[Service]
+Type=simple
+# DRY RUN until reviewed (2026-11-10). Remove --dry-run to go live.
+ExecStart=/usr/bin/python3 -I /usr/local/sbin/av-organizer.py --mode monitor --interval 60 --settle 120 \
+  --inbox /tank/jellyfin/media/_incoming --inbox /tank/qbittorrent/downloads --dry-run
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

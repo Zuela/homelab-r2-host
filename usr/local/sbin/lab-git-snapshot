@@ -34,7 +34,7 @@ snapshot() {  # repo
   local repo=$1
   cd "$repo" || return
   git add -A
-  git diff --cached --quiet && return
+  git diff --cached --quiet && { push_all; return; }  # still push commits agents made by hand
   if ! gitleaks protect --staged --source . --exit-code 1 >/tmp/lab-git-snapshot.leaks 2>&1; then
     git reset -q
     lab-notify "Git snapshot blocked: possible secret" <<<"gitleaks flagged staged changes in $repo at $TS. Nothing committed. Run: cd $repo && git add -A && gitleaks protect --staged -v"

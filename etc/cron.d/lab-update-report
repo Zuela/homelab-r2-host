@@ -1,0 +1,2 @@
+# Weekly update report to #homelab-alerts via n8n (2026-11-10)
+0 8 * * 1 root /usr/local/sbin/lab-update-report.sh >/dev/null 2>&1

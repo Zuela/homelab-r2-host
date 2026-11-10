@@ -4,7 +4,7 @@
 #   /var/lib/r2-host-git  -> homelab/r2-host  (copy of host scripts, cron, custom units, Proxmox CT/job/storage configs)
 # Agents still commit their own changes with a real message; this only picks up what nobody committed.
 # gitleaks checks staged changes first; on a hit nothing is committed and lab-notify alerts.
-# Pushes to origin (Gitea) when a remote is set; Gitea push-mirrors to GitHub.
+# Pushes to origin (Gitea) and github (private mirror Zuela/homelab-ops, Zuela/homelab-r2-host) when set.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 DOCS=/tank/studio-homelab
 HOST=/var/lib/r2-host-git
@@ -23,6 +23,13 @@ sync_host() {
   cp /etc/pve/jobs.cfg /etc/pve/storage.cfg $HOST/etc/pve/
 }
 
+push_all() {  # Gitea, then the GitHub private mirror (deploy key per repo, Dan 2026-11-10)
+  local r
+  for r in origin github; do
+    git remote get-url $r >/dev/null 2>&1 && git push -q $r main
+  done
+}
+
 snapshot() {  # repo
   local repo=$1
   cd "$repo" || return
@@ -35,7 +42,7 @@ snapshot() {  # repo
   fi
   git commit -qm "auto: $(git diff --cached --name-only | wc -l) file(s) changed, snapshot $TS" \
     -m "$(git diff --cached --stat | tail -15)"
-  git remote get-url origin >/dev/null 2>&1 && git push -q origin main
+  push_all
   echo "$TS committed $repo"
 }
 

@@ -1,0 +1,6 @@
+# r2 vault copy protection (Dan 2026-11-10): hourly note history in /var/lib/vault-git (local only),
+# nightly full copy to /tank/vault-backup before the 03:15 tank ZFS snapshot.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+20 * * * * root /usr/local/sbin/lab-vault-backup git >> /var/log/lab-vault-backup.log 2>&1
+5 3 * * * root /usr/local/sbin/lab-vault-backup copy >> /var/log/lab-vault-backup.log 2>&1

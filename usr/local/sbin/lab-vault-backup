@@ -1,0 +1,39 @@
+#!/bin/bash
+# lab-vault-backup (2026-11-10, Dan said yes to the wiki plan). Protects the r2 copy of the Obsidian vault.
+#   lab-vault-backup git    commit note history (*.md, *.base, *.canvas) to /var/lib/vault-git
+#                           (git dir outside the vault, local only, never pushed; the vault holds finances)
+#   lab-vault-backup copy   git, then rsync the whole vault to /tank/vault-backup/zueyrebro (root only);
+#                           the nightly ZFS snapshot of tank (homelab-zfs-role-snapshots, keep 7) versions it
+# Reads the vault only; never writes inside it, so Obsidian Sync is unaffected.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+VAULT=/home/obsidian/vaults/zueyrebro
+GITDIR=/var/lib/vault-git
+COPY=/tank/vault-backup/zueyrebro
+TS=$(date -u +%Y-%m-%dT%H:%MZ)
+g() { git --git-dir=$GITDIR --work-tree=$VAULT "$@"; }
+
+vault_git() {
+  if [ ! -d $GITDIR ]; then
+    git init -q --bare -b main $GITDIR
+    git --git-dir=$GITDIR config core.bare false
+    git --git-dir=$GITDIR config user.name "r2 vault history"
+    git --git-dir=$GITDIR config user.email "vault@r2.home.arpa"
+    # notes only: attachments (PDFs, images, audio) are covered by the tank copy
+    printf '*\n!*/\n!*.md\n!*.base\n!*.canvas\n.obsidian/\n.trash/\n*.bak*\n' > $GITDIR/info/exclude
+  fi
+  g add -A
+  g diff --cached --quiet && return
+  g commit -qm "vault: $(g diff --cached --name-only | wc -l) note(s) changed, $TS"
+}
+
+vault_copy() {
+  install -d -m 700 /tank/vault-backup
+  rsync -a --delete $VAULT/ $COPY/
+  echo "$TS copied vault to $COPY"
+}
+
+case "${1:-git}" in
+  git) vault_git ;;
+  copy) vault_git; vault_copy ;;
+  *) echo "usage: lab-vault-backup git|copy" >&2; exit 2 ;;
+esac

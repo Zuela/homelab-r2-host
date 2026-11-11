@@ -1,0 +1,4 @@
+# Machine-written wiki pages (vault 05 Wiki/Generated) from live r2 state, hourly; rewrites only on change. Dan 2026-11-10.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+40 * * * * root /usr/local/sbin/lab-wiki-generate >> /var/log/lab-wiki-generate.log 2>&1

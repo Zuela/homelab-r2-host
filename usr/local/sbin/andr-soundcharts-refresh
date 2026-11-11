@@ -1,0 +1,18 @@
+#!/bin/bash
+# Weekly Soundcharts refresh for the Soundcheck watch list (Dan approved 2026-11-11).
+# Pulls Soundcheck main (fast-forward only), then refreshes data/watchlist.tsv with a request cap.
+# Output: /tank/andr/soundcheck/out/soundcharts-YYYY-MM-DD.jsonl and out/catalogue.sqlite.
+# Requests are logged to out/soundcharts.log (no credentials).
+set -euo pipefail
+cd /tank/andr/soundcheck
+echo "== $(date -Is) start"
+git pull --ff-only -q origin main || echo "warn: git pull failed, running on current checkout"
+python3 scripts/soundcharts.py refresh data/watchlist.tsv --cap 1500 --no-cache
+echo "== $(date -Is) done"
+# Alerts run only once services/r2-jobs/soundcharts_alerts.py is merged to andr-ops main (repo-watch keeps the checkout current).
+ALERTS=/tank/andr/andr-ops/services/r2-jobs/soundcharts_alerts.py
+if [ "$(git -C /tank/andr/andr-ops rev-parse --abbrev-ref HEAD)" = main ] && [ -f "$ALERTS" ]; then
+  python3 "$ALERTS" --slack-dm || echo "warn: alerts failed"
+else
+  echo "alerts: not merged yet, skipped"
+fi

@@ -1,0 +1,6 @@
+# Named job soundcheck:soundcharts-refresh (Dan approved 2026-11-11). Mondays 10:30 ET (host clock is America/New_York), before the team's week starts.
+# Refreshes data/watchlist.tsv from Soundcharts, capped at 1,500 requests. See docs/SOUNDCHARTS.md in Soundcheck.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOME=/root
+30 10 * * 1 root flock -n /run/lock/andr-soundcharts-refresh.lock /usr/local/sbin/andr-soundcharts-refresh >>/var/log/andr-soundcharts-refresh.log 2>&1

@@ -1,0 +1,5 @@
+#!/bin/bash
+# Dan runs this once, through an SSH tunnel, to sign in to Spotify for the Demo Tapes raw capture (andr-ops 0053).
+#   from the Mac: ssh -t -L 8888:192.168.4.68:8888 r2 /usr/local/sbin/andr-spotify-signin
+# Read-only scopes playlist-read-private and playlist-read-collaborative. Token stays in CT 221, mode 600.
+exec pct exec 221 -- bash -c "cd /repo/deploy && docker compose --env-file /etc/andr-data/andr-data.env run --rm --no-deps -p 8888:8888 dagster-daemon python -m andr_data.spotify signin"

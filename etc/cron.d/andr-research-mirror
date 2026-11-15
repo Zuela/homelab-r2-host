@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# andr-data research mirror (andr-ops 0062): fetch every 5 minutes, own clone, read only for CT 221
+*/5 * * * * root flock -n /run/lock/andr-research-mirror.lock /usr/local/sbin/andr-research-mirror >>/var/log/andr-research-mirror.log 2>&1

@@ -1,0 +1,22 @@
+#!/bin/bash
+# Keep the andr-data loader's own read-only mirror of research main (andr-ops 0062, dreams on Postgres D1).
+# Never the shared /tank/andr/research clone. Fetch every 5 minutes; move the worktree only when origin/main moved.
+# The Dagster sensor in CT 221 reads this mirror's HEAD and loads on change. Four failures in a row alert once.
+set -u
+M=/tank/andr/andr-data-mirrors/research
+STATE=/var/lib/andr-research-mirror
+mkdir -p "$STATE"
+ts=$(date +'%Y-%m-%d %H:%M')
+if err=$(timeout 120 git -C "$M" fetch -q origin main 2>&1); then
+  rm -f "$STATE/fails"
+  new=$(git -C "$M" rev-parse origin/main); cur=$(git -C "$M" rev-parse HEAD)
+  if [ "$new" != "$cur" ]; then
+    git -C "$M" reset -q --hard origin/main && echo "$ts moved ${cur:0:12} -> ${new:0:12}"
+  fi
+else
+  n=$(( $(cat "$STATE/fails" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STATE/fails"
+  echo "$ts FAILED run $n: $(printf '%s' "$err" | tail -1 | cut -c1-160)"
+  if [ "$n" -eq 4 ]; then
+    echo "research mirror for andr-data has failed to fetch for 20 minutes on r2. See /var/log/andr-research-mirror.log" | /usr/local/sbin/lab-notify "AndR research mirror stale" >/dev/null 2>&1 || echo "$ts alert send FAILED"
+  fi
+fi

@@ -87,6 +87,16 @@ DUPS=$( { dupcheck 214 "$(echo "$EXPECT" | awk '$1!=214{print $2, $3}')"; dupche
 JF=$(pct exec 207 -- sh -c 'for f in /srv/jellyfin/config/data/root/default/*/*.mblink; do p=$(cat "$f"); docker exec jellyfin test -d "$p" || echo "$p"; done' 2>&1)
 [ -z "$JF" ] && ok "ct207 jellyfin  library paths present" || fail "ct207 jellyfin  missing library path: $(echo "$JF" | tr "\n" " ")"
 
+# 8) av-organizer is running and its inboxes are draining (nothing finished sits > 24h).
+# Added 2026-11-14 when the sorter went live; it ran dry-run unnoticed for 4 days before.
+if ! systemctl is-active -q av-organizer; then
+  fail "av-organizer    service $(systemctl is-active av-organizer)"
+else
+  STUCK=$(find /tank/qbittorrent/downloads /tank/jellyfin/media/_incoming \
+    \( -name incomplete -o -name torrent-inprogress -o -name '.*' \) -prune -o -type f -mmin +1440 -print 2>/dev/null | wc -l)
+  [ "$STUCK" -eq 0 ] && ok "av-organizer    running, inboxes clear" || warn "av-organizer    $STUCK file(s) in inbox > 24h (unsortable? see .av-organizer.log)"
+fi
+
 echo "[$TS] done" >> "$LOG"
 
 # ntfy on state change only, so a stuck failure does not page every 15 min.

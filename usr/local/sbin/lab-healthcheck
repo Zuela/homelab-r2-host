@@ -81,6 +81,12 @@ done)
 DUPS=$( { dupcheck 214 "$(echo "$EXPECT" | awk '$1!=214{print $2, $3}')"; dupcheck 213 "$(echo "$EXPECT" | awk '$1==214{print $2, $3}')"; } )
 [ -z "$DUPS" ] && ok "lan ip          no duplicate CT IPs" || fail "lan ip          duplicate: $(echo "$DUPS" | tr "\n" ";")"
 
+# 7) Jellyfin library roots exist inside the container.
+# Added 2026-11-14: all four libraries still pointed at the pre-r2 /mnt/ZUAY/AV paths, so no scan
+# added anything from 2026-08-22 to 2026-11-14 while the port check stayed green.
+JF=$(pct exec 207 -- sh -c 'for f in /srv/jellyfin/config/data/root/default/*/*.mblink; do p=$(cat "$f"); docker exec jellyfin test -d "$p" || echo "$p"; done' 2>&1)
+[ -z "$JF" ] && ok "ct207 jellyfin  library paths present" || fail "ct207 jellyfin  missing library path: $(echo "$JF" | tr "\n" " ")"
+
 echo "[$TS] done" >> "$LOG"
 
 # ntfy on state change only, so a stuck failure does not page every 15 min.

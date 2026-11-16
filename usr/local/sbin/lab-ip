@@ -12,6 +12,7 @@ DEVICES="192.168.4.1|Verizon Fios CHR30A-R gateway|router
 192.168.5.10|ProDesk (PBS)|set on ProDesk (router cannot reserve outside its pool)
 192.168.5.11|r2 Proxmox host|static
 192.168.5.124|Camera NVR (Frigate source)|static on device
+192.168.6.250|Hubitat hub (HA integration)|static on device, top of DHCP pool
 192.168.5.73|Reolink doorbell side door|static on device
 192.168.5.75|Reolink doorbell front door|static on device"
 

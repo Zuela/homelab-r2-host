@@ -1,0 +1,12 @@
+[Unit]
+Description=GPU arbiter: one owner for the RTX 5080 (Ollama CT202 vs ComfyUI CT203)
+After=network-online.target pve-guests.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/gpu-arbiter daemon
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

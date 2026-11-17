@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# gpu-arbiter (2026-11-17, Dan approved). Single owner of the RTX 5080 shared by Ollama (CT202) and ComfyUI (CT203).
+# Replaces gpu-comfy-queue-guard, whose `ollama stop` never freed VRAM while callers kept the model busy.
+#
+# Modes (/var/lib/gpu-mode/mode):
+#   llm  (default) Ollama may load models; ComfyUI models unloaded on entry.
+#   gen  ComfyUI owns the GPU. In CT202 a REJECT rule at the top of the OLLAMA-API chain refuses every
+#        caller except Kuma (so the "Ollama API" monitor stays green and /api/tags still answers),
+#        and the llama-server runner is stopped (killed if it hangs on "Stopping...").
+# Switching:
+#   ComfyUI queue busy while in llm   -> gen (auto)
+#   gen and ComfyUI queue empty for IDLE_SECS (900) -> llm (auto, also after a manual gpu-gen)
+#   gpu-arbiter set gen|llm [--force]  (gpu-gen / gpu-llm wrappers in /usr/local/bin)
+# Usage: gpu-arbiter daemon | set gen|llm [--force] | status
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DIR=/var/lib/gpu-mode
+PAUSE_FLAG=/var/lib/lab-healthcheck/ollama-paused
+OLLAMA_CT=202
+COMFY_URL=http://192.168.4.41:8188
+KUMA_IP=192.168.4.30
+IDLE_SECS=${GPU_ARBITER_IDLE_SECS:-900}
+POLL=2
+RULE=(OLLAMA-API -p tcp ! -s "$KUMA_IP/32" -m comment --comment gpu-arbiter-gen -j REJECT --reject-with tcp-reset)
+mkdir -p "$DIR"
+
+log() { echo "[$(date -u +%FT%TZ)] $*"; }
+now() { date +%s; }
+vram() { nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader 2>/dev/null | head -1; }
+
+comfy_busy() {  # prints queued+running count, or -1 if ComfyUI is unreachable
+  curl -s -m 3 "$COMFY_URL/queue" 2>/dev/null | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin); print(len(d.get("queue_running",[]))+len(d.get("queue_pending",[])))
+except Exception:
+ print(-1)'
+}
+
+comfy_free() { curl -s -m 10 -X POST "$COMFY_URL/free" -H 'Content-Type: application/json' \
+  -d '{"unload_models":true,"free_memory":true}' >/dev/null 2>&1 || true; }
+
+block_present() { pct exec $OLLAMA_CT -- iptables -C "${RULE[@]}" 2>/dev/null; }
+block_on()  { block_present || pct exec $OLLAMA_CT -- iptables -I "${RULE[0]}" 1 "${RULE[@]:1}"; }
+block_off() { while block_present; do pct exec $OLLAMA_CT -- iptables -D "${RULE[@]}" || break; done; }
+
+runner_up() { pct exec $OLLAMA_CT -- pgrep -f /usr/lib/ollama/llama-server >/dev/null 2>&1; }
+runner_down() {  # ask nicely, then kill: `ollama stop` waits forever while a request is in flight
+  local m i
+  for m in $(pct exec $OLLAMA_CT -- docker exec ollama ollama ps 2>/dev/null | awk 'NR>1{print $1}'); do
+    pct exec $OLLAMA_CT -- docker exec ollama ollama stop "$m" >/dev/null 2>&1 || true
+  done
+  for i in 1 2 3 4 5; do runner_up || return 0; sleep 1; done
+  log "runner still up after ollama stop -> kill"
+  pct exec $OLLAMA_CT -- pkill -f /usr/lib/ollama/llama-server || true
+  sleep 1
+  runner_up && pct exec $OLLAMA_CT -- pkill -9 -f /usr/lib/ollama/llama-server || true
+}
+
+write_mode() {  # mode reason
+  echo "$2" > "$DIR/reason"; date -u +%FT%TZ > "$DIR/changed_at"; echo "$1" > "$DIR/mode"
+}
+
+enter_gen() {
+  touch "$PAUSE_FLAG"
+  block_on
+  runner_down
+  write_mode gen "$1"
+  log "mode=gen ($1) vram: $(vram)"
+}
+
+enter_llm() {
+  comfy_free
+  block_off
+  rm -f "$PAUSE_FLAG"
+  write_mode llm "$1"
+  log "mode=llm ($1) vram: $(vram)"
+}
+
+daemon() {
+  local mode req busy last_busy t last_enforce=0
+  mode=$(cat "$DIR/mode" 2>/dev/null || echo llm)
+  [ "$mode" = gen ] || mode=llm
+  log "start, idle return ${IDLE_SECS}s, reconciling mode=$mode"
+  if [ "$mode" = gen ]; then enter_gen "daemon start"; else enter_llm "daemon start"; fi
+  last_busy=$(now)
+  while true; do
+    if [ -f "$DIR/request" ]; then
+      req=$(cat "$DIR/request")
+      case "$req" in
+        gen) enter_gen manual; mode=gen; last_busy=$(now) ;;
+        llm-force) curl -s -m 5 -X POST "$COMFY_URL/queue" -H 'Content-Type: application/json' -d '{"clear":true}' >/dev/null 2>&1
+                   curl -s -m 5 -X POST "$COMFY_URL/interrupt" >/dev/null 2>&1; sleep 2
+                   enter_llm "manual --force"; mode=llm ;;
+        llm) enter_llm manual; mode=llm ;;
+      esac
+      rm -f "$DIR/request"   # removed after the switch so `set` returns once it is applied
+    fi
+    busy=$(comfy_busy)
+    t=$(now)
+    if [ "$busy" -gt 0 ] 2>/dev/null; then
+      last_busy=$t
+      if [ "$mode" = llm ]; then log "comfy queue $busy"; enter_gen "auto: comfy queue busy"; mode=gen; fi
+    elif [ "$mode" = gen ] && [ $((t - last_busy)) -ge "$IDLE_SECS" ]; then
+      enter_llm "auto: comfy idle ${IDLE_SECS}s"; mode=llm
+    fi
+    # re-assert gen every 30 s (firewall reapplied at CT boot, or a runner that slipped in)
+    if [ "$mode" = gen ] && [ $((t - last_enforce)) -ge 30 ]; then
+      last_enforce=$t
+      block_present || { log "gen block missing -> re-add"; block_on; }
+      runner_up && { log "runner up in gen -> stop"; runner_down; }
+    fi
+    echo "$last_busy" > "$DIR/last_comfy_busy"
+    sleep $POLL
+  done
+}
+
+status() {
+  local mode lb busy
+  mode=$(cat "$DIR/mode" 2>/dev/null || echo unknown)
+  echo "mode=$mode since $(cat "$DIR/changed_at" 2>/dev/null) ($(cat "$DIR/reason" 2>/dev/null))"
+  echo "arbiter: $(systemctl is-active gpu-arbiter 2>/dev/null)"
+  busy=$(comfy_busy); echo "comfy queue: $busy"
+  if [ "$mode" = gen ] && [ "$busy" = 0 ]; then
+    lb=$(cat "$DIR/last_comfy_busy" 2>/dev/null || now)
+    echo "auto return to llm in $(( (IDLE_SECS - ($(now) - lb)) / 60 + 1 )) min (after ${IDLE_SECS}s with comfy idle)"
+  fi
+  block_present && echo "ollama: callers blocked (gen)" || echo "ollama: open"
+  echo "vram used, free: $(vram)"
+}
+
+set_mode() {
+  local want=${1:-} force=${2:-} busy i
+  case "$want" in gen|llm) ;; *) echo "usage: gpu-arbiter set gen|llm [--force]" >&2; exit 2 ;; esac
+  systemctl is-active -q gpu-arbiter || { echo "gpu-arbiter service not running" >&2; exit 1; }
+  if [ "$want" = llm ]; then
+    busy=$(comfy_busy)
+    if [ "$busy" -gt 0 ] 2>/dev/null; then
+      if [ "$force" != --force ]; then
+        echo "ComfyUI has $busy job(s) queued or running; it would just switch back to gen." >&2
+        echo "Wait for them, or: gpu-llm --force (cancels the ComfyUI queue)" >&2; exit 1
+      fi
+      want=llm-force
+    fi
+  fi
+  echo "$want" > "$DIR/request"
+  for i in $(seq 1 60); do [ -f "$DIR/request" ] || break; sleep 1; done
+  [ -f "$DIR/request" ] && echo "WARN: arbiter has not applied the request after 60 s" >&2
+  status
+}
+
+case "${1:-}" in
+  daemon) daemon ;;
+  set) shift; set_mode "$@" ;;
+  status) status ;;
+  *) echo "usage: gpu-arbiter daemon | set gen|llm [--force] | status" >&2; exit 2 ;;
+esac

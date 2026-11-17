@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""lab-ring-watch (Dan 2026-11-17): alert ntfy homelab-alerts (copied to Matrix by ntfy-to-matrix)
+when the Ring Alarm sensors go silent. They are Ring cloud mirrors in Hubitat ("Ring Virtual ..."),
+so if the Ring Alarm Pro base is off or the Ring link breaks, HA keeps showing closed / no smoke with no error.
+Checks: (1) the Ring base MAC answers on the LAN, (2) at least one Ring Virtual sensor changed state in HA
+in the last STALE_H hours. Alerts on state change, re-alerts every 24 h while failing. Read only."""
+import datetime
+import json
+import os
+import subprocess
+import time
+import urllib.request
+
+RING_MAC = "b0:09:da:4f:03:4e"  # Ring Solutions device seen 2026-11-17 at 192.168.6.42, assumed Ring Alarm Pro base
+STALE_H = 24
+HA = "http://192.168.4.20:8123"
+STATE = "/var/lib/lab-ring-watch/state.json"
+LOG = "/var/log/lab-ring-watch.log"
+NTFY = ('. /root/.creds/ntfy; curl -fsS -m 10 -H "Authorization: Bearer $(cat "$NTFY_TOKEN_FILE")" '
+        '-H "Title: $1" -H "Priority: $2" --data-binary @- "$NTFY_BASE_URL/homelab-alerts" >/dev/null')
+
+
+def utcnow():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def log(m):
+    with open(LOG, "a") as f:
+        f.write(f"[{utcnow():%Y-%m-%dT%H:%M:%SZ}] {m}\n")
+
+
+def sh(c):
+    return subprocess.run(c, shell=True, capture_output=True, text=True).stdout
+
+
+problems = []
+
+try:
+    st = json.load(open(STATE))
+except Exception:
+    st = {"status": "OK", "last_alert": 0}
+
+# 1. Ring base on the LAN, found by MAC so a new DHCP IP does not matter.
+# Wi-Fi devices can miss one ARP sweep, so try twice and only count it after 3 missed runs (15 min).
+ip = None
+for _ in range(2):
+    out = sh("nmap -sn -n 192.168.6.0/24 2>/dev/null")
+    last = None
+    for line in out.splitlines():
+        if line.startswith("Nmap scan report for"):
+            last = line.split()[-1]
+        elif RING_MAC in line.lower():
+            ip = last
+    if ip:
+        break
+    time.sleep(5)
+st["base_misses"] = 0 if ip else st.get("base_misses", 0) + 1
+if st["base_misses"] >= 3:
+    problems.append(f"Ring Alarm base ({RING_MAC}) not on the LAN for {st['base_misses'] * 5} min")
+
+# 2. recent Ring sensor activity in HA
+n = -1
+try:
+    tok = open("/root/.creds/ha-token").read().strip()
+    reg = json.loads(sh("pct exec 220 -- cat /srv/homeassistant/config/.storage/core.entity_registry"))["data"]["entities"]
+    devs = json.loads(sh("pct exec 220 -- cat /srv/homeassistant/config/.storage/core.device_registry"))["data"]["devices"]
+    model = {d["id"]: str(d.get("model") or "") for d in devs}
+    ring = set()
+    for e in reg:
+        m = model.get(e.get("device_id"), "")
+        if (not e.get("disabled_by") and e["entity_id"].startswith("binary_sensor.")
+                and m.startswith("Ring Virtual") and "Hub" not in m and "Keypad" not in m):
+            ring.add(e["entity_id"])
+    start = (utcnow() - datetime.timedelta(hours=STALE_H)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    req = urllib.request.Request(f"{HA}/api/logbook/{start}", headers={"Authorization": f"Bearer {tok}"})
+    lb = json.load(urllib.request.urlopen(req, timeout=30))
+    n = sum(1 for x in lb if x.get("entity_id") in ring)
+    if not ring:
+        problems.append("no Ring Virtual sensors found in HA")
+    elif n == 0:
+        problems.append(f"no Ring sensor (door, motion, glass, smoke/CO) changed in HA for {STALE_H} h")
+except Exception as e:
+    problems.append(f"could not read HA: {str(e)[:120]}")
+
+status = "FAIL" if problems else "OK"
+log(f"{status} base_ip={ip} ring_events_{STALE_H}h={n} {'; '.join(problems)}")
+
+os.makedirs(os.path.dirname(STATE), exist_ok=True)
+now = time.time()
+send = status != st.get("status") or (status == "FAIL" and now - st.get("last_alert", 0) > 86400)
+if send:
+    if status == "FAIL":
+        title, prio = "Ring sensors silent", "high"
+        body = ("\n".join("- " + p for p in problems)
+                + "\nDoor, motion and smoke/CO in HA may be stale. Check the Ring Alarm Pro base is powered and online.")
+    else:
+        title, prio = "Ring sensors OK", "default"
+        body = f"Ring base on the LAN at {ip}, {n} Ring sensor events in {STALE_H} h."
+    rc = subprocess.run(["bash", "-c", NTFY, "_", title, prio], input=body, text=True).returncode
+    log(f"ntfy '{title}' rc={rc}")
+    if rc == 0:
+        st.update(status=status, last_alert=now if status == "FAIL" else 0)
+else:
+    st["status"] = status
+with open(STATE, "w") as f:
+    json.dump(st, f)

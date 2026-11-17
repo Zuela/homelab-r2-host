@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Ring Alarm silent-failure watch (Dan 2026-11-17): ntfy homelab-alerts on change, copied to Matrix
+*/5 * * * * root flock -n /run/lock/lab-ring-watch.lock /usr/local/sbin/lab-ring-watch >/dev/null 2>&1

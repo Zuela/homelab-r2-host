@@ -1,0 +1,11 @@
+#!/bin/bash
+# andr-live-approve PATH: Dan approves one live script for andr-live-run (copies it and records its sha256).
+# Not covered by any allow rule: only Dan runs this.
+set -euo pipefail
+src="${1:?path to the script}"; DIR=/etc/andr-live-run; name=$(basename "$src")
+[[ "$name" =~ ^[a-z0-9_-]{1,60}\.sh$ ]] || { echo "script name must be lower case, ending .sh" >&2; exit 2; }
+install -d -o root -g root -m 0755 $DIR/approved
+install -o root -g root -m 0644 "$src" "$DIR/approved/$name"
+echo "$(sha256sum "$DIR/approved/$name" | cut -d' ' -f1) $name $(date -u +%FT%TZ)" >> $DIR/manifest
+chmod 0644 $DIR/manifest
+echo "approved $name"

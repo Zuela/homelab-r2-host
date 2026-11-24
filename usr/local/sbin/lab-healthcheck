@@ -105,8 +105,16 @@ PREV=$(cat "$STATE_DIR/last" 2>/dev/null || echo OK)
 if [ "$NOW" != "$PREV" ] && [ -r "$NTFY_ENV" ]; then
   . "$NTFY_ENV"
   TOKEN=$(cat "$NTFY_TOKEN_FILE" 2>/dev/null)
-  if [ "$NOW" = OK ]; then MSG="r2 lab-healthcheck recovered: all checks OK"; PRIO=default
-  else MSG=$(printf "r2 lab-healthcheck:\n%s" "$NOW"); PRIO=high; fi
+  # 2026-11-23 (Dan): FAIL lines go under "Can't wait", WARN lines under "Can wait".
+  if [ "$NOW" = OK ]; then MSG=$(printf "r2 lab-healthcheck\n\nCan wait:\n- recovered: all checks OK"); PRIO=default
+  else
+    CRIT=$(printf "%s\n" "$NOW" | grep -v "^WARN " | sed "s/^/- /")
+    LATER=$(printf "%s\n" "$NOW" | grep "^WARN " | sed "s/^WARN /- /")
+    MSG="r2 lab-healthcheck"
+    [ -n "$CRIT" ] && MSG=$(printf "%s\n\nCan't wait:\n%s" "$MSG" "$CRIT")
+    [ -n "$LATER" ] && MSG=$(printf "%s\n\nCan wait:\n%s" "$MSG" "$LATER")
+    PRIO=default; [ -n "$CRIT" ] && PRIO=high
+  fi
   curl -fsS -m 5 -H "Authorization: Bearer $TOKEN" -H "Title: r2 healthcheck" -H "Priority: $PRIO" \
     -d "$MSG" "$NTFY_BASE_URL/$NTFY_TOPIC" >/dev/null 2>&1 \
     && echo "[$TS] ntfy  sent state change" >> "$LOG" \

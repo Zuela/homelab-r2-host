@@ -4,6 +4,7 @@
 # needs attention: the run failed, Instagram blocked it, items were held, the run fell back to
 # Tesseract, the timer has not run in 26 hours, or a scaffold has waited more than 48 hours.
 # Counts and statuses only, never captured text. Quiet nights send nothing.
+# 2026-11-23 (Dan): runs 10:00 ET; body has a "Can wait" section (nothing here is urgent: personal lane).
 set -u
 CT=218
 NTFY_ENV=/root/.creds/ntfy  # defines NTFY_BASE_URL + NTFY_TOKEN_FILE
@@ -59,7 +60,7 @@ if [ "${#issues[@]}" -eq 0 ]; then
   echo "$(date -u +%FT%TZ) ok" >> "$LOG"
   exit 0
 fi
-msg=$(printf '%s\n' "${issues[@]}")
+msg=$(printf 'Can wait:\n'; printf -- '- %s\n' "${issues[@]}")
 echo "$(date -u +%FT%TZ) alert: $(echo "$msg" | tr '\n' '|')" >> "$LOG"
 if [ -r "$NTFY_ENV" ]; then
   . "$NTFY_ENV"

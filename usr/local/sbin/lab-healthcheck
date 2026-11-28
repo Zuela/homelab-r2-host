@@ -1,5 +1,5 @@
 #!/bin/bash
-# lab-healthcheck v3 (2026-10-21: + duplicate IP check; v2 2026-10-14). Cron */15. Doc: /tank/studio-homelab/ops/ARCHITECTURE.md
+# lab-healthcheck v3 (2026-10-21: + duplicate IP check; v2 2026-10-14; 2026-11-28 + intake-capture-alert heartbeat). Cron */15. Doc: /tank/studio-homelab/ops/ARCHITECTURE.md
 # v2: explicit PATH (cron lacked /usr/sbin so pct failed), Ollama + PBS checks,
 # ntfy push to homelab-alerts on state change only (FAIL->OK or OK->FAIL).
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -95,6 +95,15 @@ else
   STUCK=$(find /tank/qbittorrent/downloads /tank/jellyfin/media/_incoming \
     \( -name incomplete -o -name torrent-inprogress -o -name '.*' \) -prune -o -type f -mmin +1440 -print 2>/dev/null | wc -l)
   [ "$STUCK" -eq 0 ] && ok "av-organizer    running, inboxes clear" || warn "av-organizer    $STUCK file(s) in inbox > 24h (unsortable? see .av-organizer.log)"
+fi
+
+# 9) intake-capture-alert ran in the last day (it logs one line every run, 10:00 local).
+# Added 2026-11-28 (Dan): on 2026-11-12 the host was down at alert time and nothing said so.
+IA=/var/log/intake-capture-alert.log
+if [ -n "$(find "$IA" -mmin -1590 2>/dev/null)" ]; then
+  ok "intake-alert    ran in the last 26h"
+else
+  warn "intake-alert    no run logged in 26h (check /etc/cron.d/intake-capture-alert)"
 fi
 
 echo "[$TS] done" >> "$LOG"

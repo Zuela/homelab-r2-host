@@ -47,8 +47,12 @@ for script, name, days in (('andr-repo-watch', 'repo pulls', 1), ('lif-muse-outb
         jobs.append(line(True, name, 'first cron run Dec 1'))
     else:
         jobs.append(line(cron_ran(script, days), name, '' if cron_ran(script, days) else f'no run in {days} days'))
-cap = sh('pct exec 218 -- systemctl show intake-capture.service -p Result --value').strip()
-jobs.append(line(cap == 'success', 'nightly capture', '' if cap == 'success' else (cap or 'container not reachable')))
+# 2026-11-28 (Dan): same checks as the daily intake-capture-alert, so the two never disagree.
+cap = [x for x in sh('/usr/local/sbin/intake-capture-alert --check').splitlines() if x.strip()]
+r2 = [x[4:] for x in cap if x.startswith('r2: ')]
+sage = [x[6:] for x in cap if x.startswith('sage: ')]
+jobs.append(line(not r2, 'nightly capture', '; '.join(r2)))
+jobs.append(line(not sage, 'captured notes merged by Sage', '; '.join(sage)))
 team = sh('pct exec 219 -- systemctl is-active team-intake').strip()
 jobs.append(line(team == 'active', 'team intake service', '' if team == 'active' else team or 'container not reachable'))
 runs = re.findall(r'^\| (\d{4}-\d{2}-\d{2}) \|', open('/tank/andr/research/topics/content-intelligence/runs.md', encoding='utf-8').read(), re.M)

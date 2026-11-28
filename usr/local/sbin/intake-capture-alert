@@ -2,15 +2,27 @@
 # intake-capture alert (2026-10-29, Dan approved). Runs on the r2 host after the nightly capture window.
 # Reads CT218's last intake-capture run and the queue, and sends ONE ntfy message only when something
 # needs attention: the run failed, Instagram blocked it, items were held, the run fell back to
-# Tesseract, the timer has not run in 26 hours, or a scaffold has waited more than 48 hours.
-# Counts and statuses only, never captured text. Quiet nights send nothing.
+# Tesseract, the timer has not run in 26 hours, r2 still owes a scaffold 48 hours old, or a captured
+# note has waited on Sage more than 72 hours. Counts and statuses only, never captured text.
 # 2026-11-23 (Dan): runs 10:00 ET; body has a "Can wait" section (nothing here is urgent: personal lane).
+# 2026-11-28 (Dan): queue counts come from origin/intake-queue after a git fetch (no pull in igcap's
+# working repo) via /usr/local/lib/andr/intake_queue_state.py. Captured notes waiting on Sage are their
+# own line, not "scaffolds waiting". Every run logs one line (ok or alert); lab-healthcheck warns when
+# the log is older than 26.5 hours.
+#   --check     print issue lines (r2: or sage:) and exit; no ntfy, no log. Used by lab_health.py weekly.
+#   --no-fetch  read origin/intake-queue as last fetched (dry runs).
 set -u
 CT=218
 NTFY_ENV=/root/.creds/ntfy  # defines NTFY_BASE_URL + NTFY_TOKEN_FILE
 NTFY_TOPIC=homelab-alerts
 LOG=/var/log/intake-capture-alert.log
-issues=()
+HELPER=/usr/local/lib/andr/intake_queue_state.py
+CHECK=0; NOFETCH=""
+for a in "$@"; do
+  case "$a" in --check) CHECK=1 ;; --no-fetch) NOFETCH=--no-fetch ;; esac
+done
+issues=()   # r2's own problems
+waiting=()  # Sage's side
 
 result=$(pct exec $CT -- systemctl show intake-capture.service -p Result --value 2>/dev/null)
 last=$(pct exec $CT -- systemctl show intake-capture.service -p ExecMainExitTimestampMonotonic --value 2>/dev/null)
@@ -45,26 +57,44 @@ print("; ".join(out))
 ')
 [ -n "$summary" ] && issues+=("$summary")
 
-# Scaffolds waiting more than 48 hours in queue/incoming.
-# Age comes from each scaffold's queued_at date (file times reset on every git pull).
-stale=$(pct exec $CT -- su - igcap -c 'cd ~/work/social-intake 2>/dev/null && git pull -q --rebase origin intake-queue >/dev/null 2>&1; ~/venv/bin/python -c "
-import glob, re, datetime as dt
-n = 0
-for f in glob.glob(\"queue/incoming/*.md\"):
-    m = re.search(r\"^queued_at: .?(\\d{4}-\\d{2}-\\d{2})\", open(f).read(), re.M)
-    if m and (dt.date.today() - dt.date.fromisoformat(m.group(1))).days >= 2: n += 1
-print(n)"' 2>/dev/null)
-[ -n "$stale" ] && [ "$stale" -gt 0 ] && issues+=("$stale scaffold(s) waiting more than 48h")
+# Queue: what r2 still owes versus what waits on Sage, from origin/intake-queue.
+state=$(pct exec $CT -- su - igcap -s /bin/bash -c "cd ~/work/social-intake && ~/venv/bin/python - $NOFETCH" < "$HELPER" 2>/dev/null)
+counts=$(printf '%s' "$state" | python3 -c '
+import json, sys
+try: s = json.load(sys.stdin)
+except ValueError: print("x|queue state unreadable||0|0"); sys.exit()
+o, w = s["owed"], s["sage"]
+owed = f"{len(o)} scaffold(s) r2 still owes, oldest {o[0][0]}h" if o else ""
+sage = f"{len(w)} captured note(s) waiting on Sage, oldest {w[0][0]}h" if w and w[0][0] > 72 else ""
+print(("" if s["fetch_ok"] else "git fetch of intake-queue failed, counts from last fetch") + "|" + owed + "|" + sage + f"|{len(o)}|{len(w)}")
+')
+IFS='|' read -r fetchmsg owedmsg sagemsg n_owed n_sage <<< "$counts"
+[ "$fetchmsg" = x ] && { issues+=("$owedmsg"); owedmsg=""; fetchmsg=""; }
+[ -n "$fetchmsg" ] && issues+=("$fetchmsg")
+[ -n "$owedmsg" ] && issues+=("$owedmsg")
+[ -n "$sagemsg" ] && waiting+=("$sagemsg")
 
-if [ "${#issues[@]}" -eq 0 ]; then
-  echo "$(date -u +%FT%TZ) ok" >> "$LOG"
+if [ "$CHECK" = 1 ]; then
+  for i in "${issues[@]+"${issues[@]}"}"; do echo "r2: $i"; done
+  for i in "${waiting[@]+"${waiting[@]}"}"; do echo "sage: $i"; done
   exit 0
 fi
-msg=$(printf 'Can wait:\n'; printf -- '- %s\n' "${issues[@]}")
+
+if [ "${#issues[@]}" -eq 0 ] && [ "${#waiting[@]}" -eq 0 ]; then
+  echo "$(date -u +%FT%TZ) ok owed=${n_owed:-?} sage=${n_sage:-?}" >> "$LOG"
+  exit 0
+fi
+msg=$(printf 'Can wait:\n'
+      for i in "${issues[@]+"${issues[@]}"}"; do printf -- '- %s\n' "$i"; done
+      if [ "${#waiting[@]}" -gt 0 ]; then
+        [ "${#issues[@]}" -gt 0 ] && printf '\n'
+        printf 'Waiting on Sage (not an r2 problem):\n'; printf -- '- %s\n' "${waiting[@]}"
+      fi)
+title="intake-capture needs a look"; [ "${#issues[@]}" -eq 0 ] && title="intake-capture: notes waiting on Sage"
 echo "$(date -u +%FT%TZ) alert: $(echo "$msg" | tr '\n' '|')" >> "$LOG"
 if [ -r "$NTFY_ENV" ]; then
   . "$NTFY_ENV"
   TOKEN=$(cat "$NTFY_TOKEN_FILE" 2>/dev/null)
-  curl -fsS -m 10 -H "Authorization: Bearer $TOKEN" -H "Title: intake-capture needs a look" -H "Tags: camera" \
+  curl -fsS -m 10 -H "Authorization: Bearer $TOKEN" -H "Title: $title" -H "Tags: camera" \
     -d "$msg" "$NTFY_BASE_URL/$NTFY_TOPIC" >/dev/null 2>&1 || echo "$(date -u +%FT%TZ) ntfy send FAILED" >> "$LOG"
 fi
